@@ -1,5 +1,5 @@
 """
-HEOS Remote entity
+HEOS Remote entity.
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
@@ -75,7 +75,7 @@ class HeosRemote(Remote):
 
     async def _execute_with_retry(self, command_func, command_name: str, max_retries: int = 3) -> bool:
         """Execute a command with retry logic for 'Processing previous command' errors."""
-        retry_delays = [1.0, 2.0, 3.0]  # Exponential backoff delays
+        retry_delays = [1.0, 2.0, 3.0]
         
         for attempt in range(max_retries):
             try:
@@ -103,99 +103,97 @@ class HeosRemote(Remote):
 
     async def handle_cmd(self, entity, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
         """Handle remote commands using detected capabilities with throttling."""
+        _LOG.info(f"Remote command received: {cmd_id} for {self._device_name}")
+        
         async with self._command_lock:
             try:
-                actual_command = params.get("command", cmd_id) if params else cmd_id
-                _LOG.info(f"Executing HEOS Remote command: {actual_command} for {self._device_name}")
+                # Map remote command to actual command
+                command_map = {
+                    "VOLUME_UP": "VOLUME_UP",
+                    "VOLUME_DOWN": "VOLUME_DOWN",
+                    "MUTE_TOGGLE": "MUTE_TOGGLE",
+                    "PLAY": "PLAY",
+                    "PAUSE": "PAUSE",
+                    "STOP": "STOP",
+                    "NEXT": "NEXT",
+                    "PREVIOUS": "PREVIOUS",
+                    "CURSOR_UP": "CURSOR_UP",
+                    "CURSOR_DOWN": "CURSOR_DOWN",
+                    "CURSOR_LEFT": "CURSOR_LEFT",
+                    "CURSOR_RIGHT": "CURSOR_RIGHT",
+                    "CURSOR_ENTER": "CURSOR_ENTER",
+                    "BACK": "BACK",
+                    "HOME": "HOME"
+                }
                 
-                # Throttle commands - minimum 500ms between commands
-                import time
-                current_time = time.time()
-                last_time = self._last_command_time.get(actual_command, 0)
-                time_diff = current_time - last_time
-                
-                if time_diff < 0.5:  # 500ms throttle
-                    wait_time = 0.5 - time_diff
-                    _LOG.debug(f"Throttling command {actual_command}, waiting {wait_time:.2f}s")
-                    await asyncio.sleep(wait_time)
-                
-                self._last_command_time[actual_command] = time.time()
+                actual_command = command_map.get(cmd_id, cmd_id)
                 self.attributes["last_command"] = actual_command
                 
-                # Basic playback commands
+                # Basic playback controls
                 if actual_command == "PLAY":
-                    await self._heos.player_set_play_state(self._player_id, "play")
+                    await self._heos.play(self._player_id)
                     self.attributes["last_result"] = "Playing"
                     
                 elif actual_command == "PAUSE":
-                    await self._heos.player_set_play_state(self._player_id, "pause")
+                    await self._heos.pause(self._player_id)
                     self.attributes["last_result"] = "Paused"
                     
                 elif actual_command == "STOP":
-                    await self._heos.player_set_play_state(self._player_id, "stop")
+                    await self._heos.stop(self._player_id)
                     self.attributes["last_result"] = "Stopped"
                     
-                elif actual_command == "PLAY_PAUSE":
-                    # Toggle play/pause
-                    current_state = self._heos_player.state
-                    new_state = "pause" if str(current_state) == "PlayState.PLAY" else "play"
-                    await self._heos.player_set_play_state(self._player_id, new_state)
-                    self.attributes["last_result"] = "Play/Pause toggled"
-                    
-                # Volume commands
-                elif actual_command == "VOLUME_UP":
-                    await self._heos.player_volume_up(self._player_id, step=5)
-                    self.attributes["last_result"] = "Volume increased"
-                    
-                elif actual_command == "VOLUME_DOWN":
-                    await self._heos.player_volume_down(self._player_id, step=5)
-                    self.attributes["last_result"] = "Volume decreased"
-                    
-                elif actual_command == "MUTE_TOGGLE":
-                    await self._heos.player_toggle_mute(self._player_id)
-                    self.attributes["last_result"] = "Mute toggled"
-                    
-                # Navigation commands
                 elif actual_command == "NEXT":
-                    await self._heos.player_play_next(self._player_id)
-                    self.attributes["last_result"] = "Playing next track"
+                    await self._heos.play_next(self._player_id)
+                    self.attributes["last_result"] = "Next track"
                     
                 elif actual_command == "PREVIOUS":
-                    await self._heos.player_play_previous(self._player_id)
-                    self.attributes["last_result"] = "Playing previous track"
+                    await self._heos.play_previous(self._player_id)
+                    self.attributes["last_result"] = "Previous track"
+                
+                # Volume controls
+                elif actual_command == "VOLUME_UP":
+                    await self._heos.volume_up(self._player_id, step=5)
+                    self.attributes["last_result"] = "Volume up"
                     
-                # Repeat commands
-                elif actual_command == "REPEAT_OFF":
-                    await self._heos.player_set_play_mode(self._player_id, RepeatType.OFF, self._heos_player.shuffle)
-                    self.attributes["last_result"] = "Repeat: Off"
+                elif actual_command == "VOLUME_DOWN":
+                    await self._heos.volume_down(self._player_id, step=5)
+                    self.attributes["last_result"] = "Volume down"
                     
-                elif actual_command == "REPEAT_ALL":
-                    await self._heos.player_set_play_mode(self._player_id, RepeatType.ON_ALL, self._heos_player.shuffle)
-                    self.attributes["last_result"] = "Repeat: All"
-                    
-                elif actual_command == "REPEAT_ONE":
-                    await self._heos.player_set_play_mode(self._player_id, RepeatType.ON_ONE, self._heos_player.shuffle)
-                    self.attributes["last_result"] = "Repeat: One"
-                    
-                # Shuffle commands
-                elif actual_command == "SHUFFLE_ON":
-                    await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, True)
-                    self.attributes["last_result"] = "Shuffle: On"
-                    
-                elif actual_command == "SHUFFLE_OFF":
-                    await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, False)
-                    self.attributes["last_result"] = "Shuffle: Off"
-                    
-                # Input source commands
-                elif actual_command.startswith("INPUT_"):
-                    await self._handle_input_commands(actual_command)
-                    
-                # Group management
+                elif actual_command == "MUTE_TOGGLE":
+                    await self._heos.toggle_mute(self._player_id)
+                    self.attributes["last_result"] = "Mute toggled"
+                
+                # Repeat and shuffle
+                elif actual_command == "REPEAT_TOGGLE":
+                    current_repeat = self._heos_player.repeat
+                    if current_repeat == RepeatType.OFF:
+                        await self._heos.set_play_mode(self._player_id, repeat=RepeatType.ON_ALL)
+                        self.attributes["last_result"] = "Repeat: All"
+                    elif current_repeat == RepeatType.ON_ALL:
+                        await self._heos.set_play_mode(self._player_id, repeat=RepeatType.ON_ONE)
+                        self.attributes["last_result"] = "Repeat: One"
+                    else:
+                        await self._heos.set_play_mode(self._player_id, repeat=RepeatType.OFF)
+                        self.attributes["last_result"] = "Repeat: Off"
+                        
+                elif actual_command == "SHUFFLE_TOGGLE":
+                    current_shuffle = self._heos_player.shuffle
+                    await self._heos.set_play_mode(self._player_id, shuffle=not current_shuffle)
+                    self.attributes["last_result"] = f"Shuffle: {'On' if not current_shuffle else 'Off'}"
+                
+                elif actual_command == "GROUP_ALL_SPEAKERS":
+                    await self._handle_group_all_speakers()
+                
+                # Individual speaker grouping
                 elif actual_command.startswith("GROUP_WITH_"):
-                    await self._handle_grouping_commands_with_retry(actual_command)
+                    await self._handle_grouping_commands(actual_command)
                     
                 elif actual_command == "LEAVE_GROUP":
-                    await self._handle_ungroup_command_with_retry()
+                    await self._handle_ungroup_command()
+                
+                # Input switching
+                elif actual_command.startswith("INPUT_"):
+                    await self._handle_input_commands(actual_command)
                     
                 # Favorites
                 elif actual_command.startswith("FAVORITE_"):
@@ -235,6 +233,54 @@ class HeosRemote(Remote):
                 self.attributes["last_result"] = error_msg
                 await self.push_update()
                 return StatusCodes.SERVER_ERROR
+
+    async def _handle_group_all_speakers(self):
+        """
+        CRITICAL FIX: Handle creating a group with ALL available speakers.
+        
+        This gathers all player IDs from the HEOS system and creates a single
+        multi-room group with this device as the leader.
+        """
+        try:
+            # Get all players from HEOS
+            all_players = self._heos.players
+            
+            if not all_players or len(all_players) <= 1:
+                self.attributes["last_result"] = "No other speakers available"
+                _LOG.warning("Cannot create all-speakers group: only one device available")
+                return
+            
+            # Build list of all player IDs with current player as leader (first)
+            player_ids = [self._player_id]
+            speaker_names = [self._device_name]
+            
+            for player_id, player in all_players.items():
+                if player_id != self._player_id:
+                    player_ids.append(player_id)
+                    speaker_names.append(player.name)
+            
+            _LOG.info(f"Creating all-speakers group with {len(player_ids)} devices: {speaker_names}")
+            
+            # Create group with retry logic
+            async def group_all_command():
+                await self._heos.set_group(player_ids)
+            
+            success = await self._execute_with_retry(
+                group_all_command,
+                "GROUP_ALL_SPEAKERS"
+            )
+            
+            if success:
+                speakers_list = ", ".join(speaker_names)
+                self.attributes["last_result"] = f"Grouped {len(player_ids)} speakers: {speakers_list[:50]}"
+                _LOG.info(f"✓ Successfully created all-speakers group with {len(player_ids)} devices")
+            else:
+                self.attributes["last_result"] = f"Failed to group all speakers after retries"
+                _LOG.error("Failed to create all-speakers group after retries")
+                
+        except Exception as e:
+            _LOG.error(f"Error creating all-speakers group: {e}", exc_info=True)
+            self.attributes["last_result"] = f"Failed to group all speakers: {str(e)}"
 
     async def _handle_input_commands(self, command: str):
         """Handle input source commands."""
@@ -314,28 +360,43 @@ class HeosRemote(Remote):
     async def _handle_favorite_command(self, command: str):
         """Handle favorite playback commands."""
         try:
-            # Extract favorite number
             favorite_num = int(command.split("_")[-1])
-            await self._heos.play_preset_station(self._player_id, favorite_num)
-            self.attributes["last_result"] = f"Playing favorite {favorite_num}"
+            
+            # Get favorite from coordinator
+            from uc_intg_heos.driver import _coordinator
+            
+            if _coordinator and favorite_num in _coordinator.favorites:
+                favorite = _coordinator.favorites[favorite_num]
+                await self._heos.play_preset_station(self._player_id, favorite_num)
+                self.attributes["last_result"] = f"Playing: {favorite.name}"
+            else:
+                self.attributes["last_result"] = f"Favorite {favorite_num} not found"
+                
         except Exception as e:
             _LOG.error(f"Error playing favorite: {e}")
-            self.attributes["last_result"] = "Failed to play favorite"
+            self.attributes["last_result"] = f"Failed to play favorite"
 
     async def _handle_service_command(self, command: str):
         """Handle music service commands."""
+        service_name = command[len("SERVICE_"):].replace('_', ' ')
+        
         try:
-            # Extract service name from command
-            service_name = command[len("SERVICE_"):].replace('_', ' ')
+            # Get coordinator for service access
+            from uc_intg_heos.driver import _coordinator
             
-            # This would typically trigger the media player's source selection
-            # For now, just acknowledge
-            self.attributes["last_result"] = f"Switched to {service_name}"
-            _LOG.info(f"Service command: {service_name} - use media player for actual playback")
+            if _coordinator:
+                # Find matching service
+                for source_id, source in _coordinator.music_sources.items():
+                    if source.name.upper().replace(' ', '_') == command[len("SERVICE_"):]:
+                        await self._heos.browse_source(source_id)
+                        self.attributes["last_result"] = f"Browsing: {source.name}"
+                        return
+            
+            self.attributes["last_result"] = f"Service {service_name} not available"
             
         except Exception as e:
-            _LOG.error(f"Error handling service command: {e}")
-            self.attributes["last_result"] = "Failed to switch service"
+            _LOG.error(f"Error accessing service: {e}")
+            self.attributes["last_result"] = f"Failed to access {service_name}"
 
     async def shutdown(self):
         """Shutdown the remote entity."""

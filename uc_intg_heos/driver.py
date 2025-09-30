@@ -7,21 +7,52 @@ HEOS Integration Driver.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
-import ucapi
-from ucapi import DeviceStates, Events, IntegrationAPI, StatusCodes
-from ucapi.api_definitions import SetupAction, SetupDriver, SetupComplete, SetupError
-from ucapi.ui import UiPage, Size, create_ui_icon, create_ui_text
+from ucapi import (
+    IntegrationAPI,
+    StatusCodes,
+    MediaPlayer,
+)
+from ucapi.api import filter_log_msg_data
+from ucapi.media_player import Attributes as MediaAttr
 
-from pyheos import HeosPlayer
+from pyheos import (
+    Credentials,
+    Heos,
+    HeosError,
+    HeosOptions,
+    HeosPlayer,
+    const as heos_const
+)
 
-from uc_intg_heos.config import HeosConfig
-from uc_intg_heos.coordinator import HeosCoordinator  
-from uc_intg_heos.setup import HeosSetupManager
 from uc_intg_heos.media_player import HeosMediaPlayer
 from uc_intg_heos.remote import HeosRemote
+from uc_intg_heos.config import HeosConfig
+from uc_intg_heos.coordinator import HeosCoordinator
+from uc_intg_heos.setup import HeosSetupManager
 
+from ucapi import (
+    DeviceStates,
+    EntityTypes,
+    Events,
+    Remote,
+    SetupAction,
+    SetupComplete,
+    SetupError,
+)
+
+from ucapi.ui import (
+    Buttons,
+    DeviceButtonMapping,
+    Size,
+    UiPage,
+    create_btn_mapping,
+)
+
+_LOG = logging.getLogger(__name__)
+
+# Global integration components
 api: IntegrationAPI | None = None
 _config: HeosConfig | None = None
 _coordinator: HeosCoordinator | None = None
@@ -31,11 +62,24 @@ _entities_ready: bool = False
 _initialization_lock: asyncio.Lock = asyncio.Lock()
 _setup_manager: HeosSetupManager | None = None
 
-_LOG = logging.getLogger(__name__)
+
+def create_ui_text(text: str, x: int, y: int, size: Size = None, cmd: str = None) -> dict:
+    """Helper to create UI text element."""
+    element = {
+        "type": "text",
+        "text": text,
+        "x": x,
+        "y": y
+    }
+    if size:
+        element["size"] = {"width": size.width, "height": size.height}
+    if cmd:
+        element["command"] = cmd
+    return element
 
 
 async def _initialize_entities():
-    """Initialize entities with intelligent detection - MANDATORY."""
+
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -50,7 +94,6 @@ async def _initialize_entities():
         _LOG.info("Initializing HEOS entities with intelligent detection...")
         
         try:
-            # Clear existing entities
             api.available_entities.clear()
             _media_players.clear()
             _remotes.clear()
@@ -67,7 +110,7 @@ async def _initialize_entities():
 
             _LOG.info(f"Found {len(players)} HEOS device(s)")
             
-            # create media player per device
+            # Create media player per device
             for player_id, player in players.items():
                 _LOG.info(f"Creating media player for: {player.name} (ID: {player_id})")
                 
@@ -86,10 +129,11 @@ async def _initialize_entities():
             else:
                 _LOG.info("Single device detected - media player only (no remote needed)")
             
-            # Mark entities as ready before setting connected state
+            # CRITICAL FIX: Set entities_ready ONLY after all entities are in api.available_entities
             _entities_ready = True
             
-            _LOG.info(f"HEOS integration ready: {len(_media_players)} media players, {len(_remotes)} remotes")
+            _LOG.info(f"✓ HEOS entities ready: {len(_media_players)} media players, {len(_remotes)} remotes")
+            _LOG.info(f"✓ Entities in api.available_entities: {len(api.available_entities.get_all())}")
             
         except Exception as e:
             _LOG.error(f"Failed to initialize HEOS entities: {e}", exc_info=True)
@@ -101,22 +145,26 @@ async def _initialize_entities():
 
 
 async def _create_intelligent_remotes(players: Dict[int, HeosPlayer]):
-    """Create intelligent remotes based on discovered capabilities."""
-    global _remotes, _coordinator
+    """
+    Create intelligent remotes with multi-room support - ENHANCED FOR ALL-SPEAKERS GROUP.
+    """
+    global _remotes, api
+    
+    _LOG.info("Building intelligent remote controls for multi-device scenario")
     
     for player_id, player in players.items():
-        _LOG.info(f"Building intelligent remote for: {player.name}")
+        _LOG.info(f"Analyzing capabilities for {player.name}")
         
         # Detect device capabilities
-        capabilities = await _detect_device_capabilities(player)
+        capabilities = await _detect_device_capabilities(player, player_id)
         
-        # Build dynamic UI pages
-        ui_pages = _build_dynamic_ui_pages(player, capabilities, players)
+        # Build UI pages
+        ui_pages = await _build_dynamic_ui_pages(player, capabilities, players)
         
-        # Build dynamic simple commands
-        simple_commands = _build_dynamic_simple_commands(player, capabilities, players)
+        # Build simple commands
+        simple_commands = _build_simple_commands(capabilities, players)
         
-        # Create remote with detected capabilities only
+        # Create remote entity
         remote = HeosRemote(
             heos_player=player,
             device_name=player.name,
@@ -128,176 +176,171 @@ async def _create_intelligent_remotes(players: Dict[int, HeosPlayer]):
         )
         
         await remote.initialize()
+        
         _remotes[player_id] = remote
+        # CRITICAL: Add to available_entities immediately
         api.available_entities.add(remote)
         
-        _LOG.info(f"Created intelligent remote for {player.name} with {len(simple_commands)} commands")
+        _LOG.info(f"Created intelligent remote: {remote.id}")
 
 
-async def _detect_device_capabilities(player: HeosPlayer) -> Dict[str, Any]:
-    """Detect actual device capabilities - NO ASSUMPTIONS."""
+async def _detect_device_capabilities(player: HeosPlayer, player_id: int) -> Dict[str, any]:
+    """Detect what this device can actually do."""
     capabilities = {
-        'basic_controls': {},
-        'volume_controls': {},
-        'navigation': {},
-        'inputs': {},
-        'can_be_grouped': True,  # All HEOS devices support grouping
-        'supports_favorites': _coordinator.heos.is_signed_in,
+        'supports_inputs': False,
+        'available_inputs': [],
+        'supports_favorites': False,
+        'favorites_count': 0,
+        'supports_playlists': False,
+        'playlists_count': 0,
+        'supports_services': False,
         'available_services': [],
-        'playlists_available': len(_coordinator.playlists) > 0,
-        'favorites_count': len(_coordinator.favorites)
+        'supports_grouping': True,
+        'supports_repeat': True,
+        'supports_shuffle': True,
     }
     
-    # Basic controls - all HEOS devices support these
-    capabilities['basic_controls'] = {
-        'play': True,
-        'pause': True,
-        'stop': True
-    }
-    
-    # Volume controls - all HEOS devices support these
-    capabilities['volume_controls'] = {
-        'volume_up': True,
-        'volume_down': True,
-        'mute': True
-    }
-    
-    # Navigation - all HEOS devices support these
-    capabilities['navigation'] = {
-        'next': True,
-        'previous': True
-    }
-    
-    # Detect actual inputs for THIS device
-    for input_source in _coordinator.inputs:
-        # Check if input belongs to this player by matching media_id pattern or availability
-        input_name = input_source.name.lower().replace(' ', '_')
-        capabilities['inputs'][input_name] = True
-    
-    # Get available music services (account-wide)
-    for source_id, source in _coordinator.music_sources.items():
-        if source.available:
-            capabilities['available_services'].append(source.name)
-    
-    _LOG.info(f"Detected capabilities for {player.name}:")
-    _LOG.info(f"  - Inputs: {list(capabilities['inputs'].keys())}")
-    _LOG.info(f"  - Services: {capabilities['available_services']}")
-    _LOG.info(f"  - Favorites: {capabilities['favorites_count']}")
-    _LOG.info(f"  - Playlists: {capabilities['playlists_available']}")
+    try:
+        # Check inputs
+        if _coordinator and _coordinator.inputs:
+            for input_item in _coordinator.inputs:
+                if hasattr(input_item, 'playable') and input_item.playable:
+                    capabilities['supports_inputs'] = True
+                    capabilities['available_inputs'].append(input_item.name)
+        
+        # Check favorites
+        if _coordinator and _coordinator.favorites:
+            capabilities['supports_favorites'] = True
+            capabilities['favorites_count'] = len(_coordinator.favorites)
+        
+        # Check playlists
+        if _coordinator and _coordinator.playlists:
+            capabilities['supports_playlists'] = True
+            capabilities['playlists_count'] = len(_coordinator.playlists)
+        
+        # Check music services
+        if _coordinator and _coordinator.music_sources:
+            for source_id, source in _coordinator.music_sources.items():
+                if hasattr(source, 'available') and source.available:
+                    capabilities['supports_services'] = True
+                    capabilities['available_services'].append(source.name)
+        
+        _LOG.info(f"Device capabilities for {player.name}: "
+                 f"Inputs={capabilities['supports_inputs']}, "
+                 f"Favorites={capabilities['favorites_count']}, "
+                 f"Services={len(capabilities['available_services'])}")
+        
+    except Exception as e:
+        _LOG.error(f"Error detecting capabilities for {player.name}: {e}")
     
     return capabilities
 
 
-def _build_dynamic_simple_commands(player: HeosPlayer, capabilities: Dict, all_players: Dict) -> List[str]:
-    """Build simple commands based ONLY on detected capabilities."""
-    commands = []
+def _build_simple_commands(capabilities: Dict[str, any], all_players: Dict[int, HeosPlayer]) -> List[str]:
+    """
+    Build simple command list - ENHANCED WITH ALL-SPEAKERS GROUP.
+    """
+    commands = [
+        "VOLUME_UP",
+        "VOLUME_DOWN", 
+        "MUTE_TOGGLE",
+        "CURSOR_UP",
+        "CURSOR_DOWN",
+        "CURSOR_LEFT",
+        "CURSOR_RIGHT",
+        "CURSOR_ENTER",
+        "BACK",
+        "HOME"
+    ]
     
-    # Basic playback - always available
-    commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
-    
-    # Volume - always available
-    commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
-    
-    # Navigation - always available
-    commands.extend(["NEXT", "PREVIOUS"])
-    
-    # Repeat and shuffle - always available
-    commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
-    
-    # Inputs - only those detected for THIS device
-    input_count = 0
-    for input_name, available in capabilities['inputs'].items():
-        if available:
-            command_name = input_name.upper().replace(' ', '_')
-            commands.append(f"INPUT_{command_name}")
-            input_count += 1
-    
-    _LOG.debug(f"Added {input_count} input commands for {player.name}")
-    
-    # Grouping - only if multiple devices exist
+    # Add grouping commands
     if len(all_players) > 1:
-        commands.append("LEAVE_GROUP")
-        
-        # Add specific group commands for each other device
+        # Add individual speaker grouping
         for other_player_id, other_player in all_players.items():
-            if other_player_id != player.player_id:
-                safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
-                commands.append(f"GROUP_WITH_{safe_name}")
+            safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
+            commands.append(f"GROUP_WITH_{safe_name}")
         
-        _LOG.debug(f"Added {len(all_players)} grouping commands for {player.name}")
+        # CRITICAL FIX: Add "all speakers" group command
+        commands.append("GROUP_ALL_SPEAKERS")
+        commands.append("LEAVE_GROUP")
     
-    # Favorites - only if they exist
-    if capabilities['supports_favorites'] and capabilities['favorites_count'] > 0:
-        num_favorites = min(capabilities['favorites_count'], 10)
-        for i in range(1, num_favorites + 1):
+    # Add input commands
+    if capabilities['supports_inputs']:
+        for input_name in capabilities['available_inputs']:
+            safe_name = input_name.upper().replace(' ', '_').replace('/', '_')
+            commands.append(f"INPUT_{safe_name}")
+    
+    # Add service commands
+    if capabilities['available_services']:
+        for service_name in capabilities['available_services']:
+            safe_name = service_name.upper().replace(' ', '_')
+            commands.append(f"SERVICE_{safe_name}")
+    
+    # Add favorite commands
+    if capabilities['supports_favorites']:
+        for i in range(1, min(capabilities['favorites_count'] + 1, 11)):
             commands.append(f"FAVORITE_{i}")
-        
-        _LOG.debug(f"Added {num_favorites} favorite commands for {player.name}")
     
-    # Music services - only available ones
-    for service_name in capabilities['available_services']:
-        safe_name = service_name.upper().replace(' ', '_')
-        commands.append(f"SERVICE_{safe_name}")
-    
-    _LOG.debug(f"Added {len(capabilities['available_services'])} service commands for {player.name}")
-    
-    # Playlists - only if they exist
-    if capabilities['playlists_available']:
-        commands.append("PLAYLISTS")
-    
-    # Queue management - always available
-    commands.extend(["CLEAR_QUEUE", "QUEUE_INFO"])
-    
-    _LOG.info(f"Built {len(commands)} dynamic commands for {player.name}")
     return commands
 
 
-def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players: Dict) -> List[UiPage]:
-    """Build UI pages based only on detected capabilities."""
+async def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict[str, any], 
+                                   all_players: Dict[int, HeosPlayer]) -> List[UiPage]:
+    """
+    Build dynamic UI pages - ENHANCED WITH ALL-SPEAKERS GROUP BUTTON.
+    """
     pages = []
     
-    # Page 1: Basic Transport Controls (always available)
-    page1 = UiPage(
-        page_id="transport",
-        name="Playback",
-        grid=Size(4, 6)
-    )
-    page1.add(create_ui_icon("uc:play", 0, 0, cmd="PLAY"))
-    page1.add(create_ui_icon("uc:pause", 1, 0, cmd="PAUSE"))
-    page1.add(create_ui_icon("uc:stop", 2, 0, cmd="STOP"))
-    page1.add(create_ui_icon("uc:skip-forward", 3, 0, cmd="NEXT"))
-    page1.add(create_ui_icon("uc:skip-backward", 0, 1, cmd="PREVIOUS"))
-    page1.add(create_ui_icon("uc:volume-up", 1, 1, cmd="VOLUME_UP"))
-    page1.add(create_ui_icon("uc:volume-down", 2, 1, cmd="VOLUME_DOWN"))
-    page1.add(create_ui_icon("uc:mute", 3, 1, cmd="MUTE_TOGGLE"))
-    page1.add(create_ui_icon("uc:repeat", 0, 2, cmd="REPEAT_ALL"))
-    page1.add(create_ui_icon("uc:shuffle", 1, 2, cmd="SHUFFLE_ON"))
+    # Page 1: Playback Controls
+    page1 = UiPage(page_id="playback", name="Playback", grid=Size(4, 6))
+    page1.add(create_ui_text("Play", 0, 0, cmd="PLAY"))
+    page1.add(create_ui_text("Pause", 1, 0, cmd="PAUSE"))
+    page1.add(create_ui_text("Stop", 2, 0, cmd="STOP"))
+    page1.add(create_ui_text("Next", 3, 0, cmd="NEXT"))
+    page1.add(create_ui_text("Previous", 0, 1, cmd="PREVIOUS"))
+    page1.add(create_ui_text("Vol +", 1, 1, cmd="VOLUME_UP"))
+    page1.add(create_ui_text("Vol -", 2, 1, cmd="VOLUME_DOWN"))
+    page1.add(create_ui_text("Mute", 3, 1, cmd="MUTE_TOGGLE"))
+    
+    if capabilities['supports_repeat']:
+        page1.add(create_ui_text("Repeat", 0, 2, cmd="REPEAT_TOGGLE"))
+    if capabilities['supports_shuffle']:
+        page1.add(create_ui_text("Shuffle", 1, 2, cmd="SHUFFLE_TOGGLE"))
+    
     pages.append(page1)
     
-    # Page 2: Inputs (only if this device has inputs)
-    if capabilities['inputs']:
+    # Page 2: Inputs (only if device has inputs)
+    if capabilities['supports_inputs'] and capabilities['available_inputs']:
         page2 = UiPage(page_id="inputs", name="Inputs", grid=Size(4, 6))
         row, col = 0, 0
-        for input_name in sorted(capabilities['inputs'].keys()):
-            display_name = input_name.replace('_', ' ').title()
-            command_name = f"INPUT_{input_name.upper()}"
-            page2.add(create_ui_text(display_name, col, row, cmd=command_name))
+        for input_name in capabilities['available_inputs']:
+            safe_name = input_name.upper().replace(' ', '_').replace('/', '_')
+            display_name = input_name[:15]
+            page2.add(create_ui_text(display_name, col, row, cmd=f"INPUT_{safe_name}"))
             col += 1
             if col >= 4:
                 col = 0
                 row += 1
+                if row >= 6:
+                    break
         pages.append(page2)
-        _LOG.debug(f"Created inputs page with {len(capabilities['inputs'])} inputs")
+        _LOG.debug(f"Created inputs page with {len(capabilities['available_inputs'])} inputs")
     
-    # Page 3: Grouping (only if multiple devices)
     if len(all_players) > 1:
         page3 = UiPage(page_id="grouping", name="Grouping", grid=Size(4, 6))
-        page3.add(create_ui_text("Multi-Room", 0, 0, Size(4, 1)))
+        
+        page3.add(create_ui_text(
+            "🔊 Group All",
+            0, 0,
+            Size(4, 1),
+            cmd="GROUP_ALL_SPEAKERS"  # Now has a command!
+        ))
+        
         row = 1
         for other_player_id, other_player in all_players.items():
             if other_player_id != player.player_id:
                 safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
-                display_name = other_player.name[:20]  # Truncate long names
+                display_name = other_player.name[:20]
                 page3.add(create_ui_text(
                     f"+ {display_name}",
                     0, row,
@@ -305,12 +348,14 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
                     cmd=f"GROUP_WITH_{safe_name}"
                 ))
                 row += 1
-                if row >= 6:  # Don't overflow page
+                if row >= 6:
                     break
+        
         if row < 6:
             page3.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
+        
         pages.append(page3)
-        _LOG.debug(f"Created grouping page with {len(all_players)-1} other devices")
+        _LOG.debug(f"Created grouping page with ALL speakers button + {len(all_players)-1} individual options")
     
     # Page 4: Music Services (only available ones)
     if capabilities['available_services']:
@@ -318,13 +363,13 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
         row, col = 0, 0
         for service_name in sorted(capabilities['available_services']):
             safe_name = service_name.upper().replace(' ', '_')
-            display_name = service_name[:15]  # Truncate long names
+            display_name = service_name[:15]
             page4.add(create_ui_text(display_name, col, row, cmd=f"SERVICE_{safe_name}"))
             col += 1
             if col >= 4:
                 col = 0
                 row += 1
-                if row >= 6:  # Don't overflow page
+                if row >= 6:
                     break
         pages.append(page4)
         _LOG.debug(f"Created services page with {len(capabilities['available_services'])} services")
@@ -335,10 +380,9 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
         row, col = 0, 0
         num_favorites = min(capabilities['favorites_count'], 10)
         for i in range(1, num_favorites + 1):
-            # Get actual favorite name if available
             favorite_name = f"Fav {i}"
             if i in _coordinator.favorites:
-                favorite_name = _coordinator.favorites[i].name[:12]  # Truncate
+                favorite_name = _coordinator.favorites[i].name[:12]
             
             page5.add(create_ui_text(
                 favorite_name,
@@ -349,7 +393,7 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
             if col >= 4:
                 col = 0
                 row += 1
-                if row >= 6:  # Don't overflow page
+                if row >= 6:
                     break
         pages.append(page5)
         _LOG.debug(f"Created favorites page with {num_favorites} favorites")
@@ -359,7 +403,7 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
 
 
 async def on_connect() -> None:
-    """Handle Remote connection with reboot survival."""
+    """Handle Remote connection with reboot survival - ENHANCED."""
     global _config, _entities_ready
     
     _LOG.info("UC Remote connected. Checking configuration state...")
@@ -367,7 +411,6 @@ async def on_connect() -> None:
     if not _config:
         _config = HeosConfig(api.config_dir_path)
     
-    # Reload config from disk (critical for reboot survival)
     _config.reload_from_disk()
     
     # If configured but entities not ready, initialize them now
@@ -382,7 +425,7 @@ async def on_connect() -> None:
     
     # Set appropriate device state
     if _config.is_configured() and _entities_ready:
-        _LOG.info("Configuration valid and entities ready - setting CONNECTED state")
+        _LOG.info("✓ Configuration valid and entities ready - setting CONNECTED state")
         await api.set_device_state(DeviceStates.CONNECTED)
     elif not _config.is_configured():
         _LOG.info("No configuration found - setting DISCONNECTED state")
@@ -399,30 +442,47 @@ async def on_disconnect() -> None:
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """Handle entity subscriptions with race condition protection."""
-    _LOG.info(f"Entities subscription requested: {entity_ids}")
+    """
+    Handle entity subscriptions with race condition protection - ENHANCED LOGGING.
+    """
+    _LOG.info(f"📋 Entities subscription requested: {entity_ids}")
     
     # Guard against race condition
     if not _entities_ready:
-        _LOG.error("RACE CONDITION: Subscription before entities ready! Attempting recovery...")
+        _LOG.error("⚠️ RACE CONDITION: Subscription before entities ready! Attempting recovery...")
         if _config and _config.is_configured():
             await _initialize_entities()
         else:
             _LOG.error("Cannot recover - no configuration available")
             return
     
+    _LOG.info(f"✓ Entities ready flag: {_entities_ready}")
+    _LOG.info(f"✓ Media players: {list(_media_players.keys())}")
+    _LOG.info(f"✓ Remotes: {list(_remotes.keys())}")
+    
+    # Process subscriptions
     for entity_id in entity_ids:
+        found = False
+        
         # Check media players
         for player_id, media_player in _media_players.items():
             if entity_id == media_player.id:
+                _LOG.info(f"✓ Subscribing to media player: {entity_id}")
                 await media_player.push_update()
+                found = True
                 break
         
         # Check remotes
-        for player_id, remote in _remotes.items():
-            if entity_id == remote.id:
-                await remote.push_update()
-                break
+        if not found:
+            for player_id, remote in _remotes.items():
+                if entity_id == remote.id:
+                    _LOG.info(f"✓ Subscribing to remote: {entity_id}")
+                    await remote.push_update()
+                    found = True
+                    break
+        
+        if not found:
+            _LOG.warning(f"⚠️ Entity not found: {entity_id}")
 
 
 async def on_unsubscribe_entities(entity_ids: List[str]):
@@ -447,7 +507,9 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """Main entry point with pre-initialization for reboot survival."""
+    """
+    Main entry point with pre-initialization for reboot survival - CRITICAL FIX.
+    """
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
@@ -458,9 +520,16 @@ async def main():
         api = IntegrationAPI(loop)
         
         _config = HeosConfig(api.config_dir_path)
+        
+        # CRITICAL FIX: Pre-initialize entities synchronously if configured
         if _config.is_configured():
-            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
-            loop.create_task(_initialize_entities())
+            _LOG.info("🔄 Found existing configuration, pre-initializing entities for reboot survival")
+            # Use await instead of create_task to ensure completion before CONNECT
+            try:
+                await _initialize_entities()
+                _LOG.info("✓ Pre-initialization complete - entities ready for subscription")
+            except Exception as e:
+                _LOG.error(f"⚠️ Pre-initialization failed: {e}")
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
