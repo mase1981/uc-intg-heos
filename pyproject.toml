@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=65.0", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uc-intg-heos"
+description = "heos Media Server integration for Unfolded Circle Remote"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MPL-2.0"}
+authors = [
+    {name = "Meir Miyara", email = "meir.miyara@gmail.com"}
+]
+keywords = [
+    "unfoldedcircle",
+    "integration",
+    "heos",
+    "media-player",
+    "remote-control"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Video :: Display",
+]
+
+dependencies = [
+    "ucapi>=0.3.1",
+    "aiohttp>=3.8.0",
+    "asyncio-timeout>=4.0.0",
+    "pyheos>=1.0.5"
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/mase1981/uc-intg-heos"
+"Bug Reports" = "https://github.com/mase1981/uc-intg-heos/issues"
+
+[tool.setuptools]
+packages = ["uc_intg_heos"]
+
+[tool.setuptools.dynamic]
+version = {attr = "uc_intg_heos.__version__"}
+
+[tool.setuptools.package-data]
+"uc_intg_heos" = ["*.json"]
+
+[project.scripts]
+uc-intg-heos = "uc_intg_heos.driver:main"
