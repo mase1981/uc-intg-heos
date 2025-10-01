@@ -7,52 +7,21 @@ HEOS Integration Driver.
 
 import asyncio
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
-from ucapi import (
-    IntegrationAPI,
-    StatusCodes,
-    MediaPlayer,
-)
-from ucapi.api import filter_log_msg_data
-from ucapi.media_player import Attributes as MediaAttr
+import ucapi
+from ucapi import DeviceStates, Events, IntegrationAPI, StatusCodes
+from ucapi.api_definitions import SetupAction, SetupDriver, SetupComplete, SetupError
+from ucapi.ui import UiPage, Size, create_ui_icon, create_ui_text
 
-from pyheos import (
-    Credentials,
-    Heos,
-    HeosError,
-    HeosOptions,
-    HeosPlayer,
-    const as heos_const
-)
+from pyheos import HeosPlayer
 
+from uc_intg_heos.config import HeosConfig
+from uc_intg_heos.coordinator import HeosCoordinator  
+from uc_intg_heos.setup import HeosSetupManager
 from uc_intg_heos.media_player import HeosMediaPlayer
 from uc_intg_heos.remote import HeosRemote
-from uc_intg_heos.config import HeosConfig
-from uc_intg_heos.coordinator import HeosCoordinator
-from uc_intg_heos.setup import HeosSetupManager
 
-from ucapi import (
-    DeviceStates,
-    EntityTypes,
-    Events,
-    Remote,
-    SetupAction,
-    SetupComplete,
-    SetupError,
-)
-
-from ucapi.ui import (
-    Buttons,
-    DeviceButtonMapping,
-    Size,
-    UiPage,
-    create_btn_mapping,
-)
-
-_LOG = logging.getLogger(__name__)
-
-# Global integration components
 api: IntegrationAPI | None = None
 _config: HeosConfig | None = None
 _coordinator: HeosCoordinator | None = None
@@ -61,6 +30,8 @@ _remotes: Dict[int, HeosRemote] = {}
 _entities_ready: bool = False
 _initialization_lock: asyncio.Lock = asyncio.Lock()
 _setup_manager: HeosSetupManager | None = None
+
+_LOG = logging.getLogger(__name__)
 
 
 def create_ui_text(text: str, x: int, y: int, size: Size = None, cmd: str = None) -> dict:
@@ -91,9 +62,10 @@ async def _initialize_entities():
             _LOG.info("Integration not configured, skipping entity initialization")
             return
             
-        _LOG.info("Initializing HEOS entities with intelligent detection...")
+        _LOG.info("Initializing HEOS entities with MusicCast survival pattern...")
         
         try:
+            # Clear existing entities
             api.available_entities.clear()
             _media_players.clear()
             _remotes.clear()
@@ -118,9 +90,11 @@ async def _initialize_entities():
                 await media_player.initialize()
                 
                 _media_players[player_id] = media_player
-                api.available_entities.add(media_player)
                 
-                _LOG.info(f"Created media player entity: {media_player.id}")
+                api.available_entities.add(media_player)
+                api.configured_entities.add(media_player)
+                
+                _LOG.info(f"✓ Created media player entity: {media_player.id}")
             
             # Create remote for multi-device scenarios
             if len(players) > 1:
@@ -129,11 +103,10 @@ async def _initialize_entities():
             else:
                 _LOG.info("Single device detected - media player only (no remote needed)")
             
-            # CRITICAL FIX: Set entities_ready ONLY after all entities are in api.available_entities
             _entities_ready = True
             
-            _LOG.info(f"✓ HEOS entities ready: {len(_media_players)} media players, {len(_remotes)} remotes")
-            _LOG.info(f"✓ Entities in api.available_entities: {len(api.available_entities.get_all())}")
+            _LOG.info(f"✓ HEOS integration ready: {len(_media_players)} media players, {len(_remotes)} remotes")
+            _LOG.info(f"✓ Available entities: {len(api.available_entities.get_all())}, Configured: {len(api.configured_entities.get_all())}")
             
         except Exception as e:
             _LOG.error(f"Failed to initialize HEOS entities: {e}", exc_info=True)
@@ -145,9 +118,7 @@ async def _initialize_entities():
 
 
 async def _create_intelligent_remotes(players: Dict[int, HeosPlayer]):
-    """
-    Create intelligent remotes with multi-room support - ENHANCED FOR ALL-SPEAKERS GROUP.
-    """
+    """Create intelligent remotes with MusicCast survival pattern."""
     global _remotes, api
     
     _LOG.info("Building intelligent remote controls for multi-device scenario")
@@ -178,10 +149,12 @@ async def _create_intelligent_remotes(players: Dict[int, HeosPlayer]):
         await remote.initialize()
         
         _remotes[player_id] = remote
-        # CRITICAL: Add to available_entities immediately
-        api.available_entities.add(remote)
         
-        _LOG.info(f"Created intelligent remote: {remote.id}")
+        # CRITICAL FIX: MusicCast pattern - add to BOTH collections
+        api.available_entities.add(remote)
+        api.configured_entities.add(remote)  # ✅ ADDED for reboot survival
+        
+        _LOG.info(f"✓ Created intelligent remote: {remote.id}")
 
 
 async def _detect_device_capabilities(player: HeosPlayer, player_id: int) -> Dict[str, any]:
@@ -237,9 +210,7 @@ async def _detect_device_capabilities(player: HeosPlayer, player_id: int) -> Dic
 
 
 def _build_simple_commands(capabilities: Dict[str, any], all_players: Dict[int, HeosPlayer]) -> List[str]:
-    """
-    Build simple command list - ENHANCED WITH ALL-SPEAKERS GROUP.
-    """
+    """Build simple command list including all-speakers group."""
     commands = [
         "VOLUME_UP",
         "VOLUME_DOWN", 
@@ -260,7 +231,7 @@ def _build_simple_commands(capabilities: Dict[str, any], all_players: Dict[int, 
             safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
             commands.append(f"GROUP_WITH_{safe_name}")
         
-        # CRITICAL FIX: Add "all speakers" group command
+        # Add "all speakers" group command
         commands.append("GROUP_ALL_SPEAKERS")
         commands.append("LEAVE_GROUP")
     
@@ -286,9 +257,7 @@ def _build_simple_commands(capabilities: Dict[str, any], all_players: Dict[int, 
 
 async def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict[str, any], 
                                    all_players: Dict[int, HeosPlayer]) -> List[UiPage]:
-    """
-    Build dynamic UI pages - ENHANCED WITH ALL-SPEAKERS GROUP BUTTON.
-    """
+    """Build dynamic UI pages with all-speakers group button."""
     pages = []
     
     # Page 1: Playback Controls
@@ -326,14 +295,16 @@ async def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict[str, an
         pages.append(page2)
         _LOG.debug(f"Created inputs page with {len(capabilities['available_inputs'])} inputs")
     
+    # Page 3: Grouping (only if multiple devices)
     if len(all_players) > 1:
         page3 = UiPage(page_id="grouping", name="Grouping", grid=Size(4, 6))
         
+        # Functional "Group All" button
         page3.add(create_ui_text(
             "🔊 Group All",
             0, 0,
             Size(4, 1),
-            cmd="GROUP_ALL_SPEAKERS"  # Now has a command!
+            cmd="GROUP_ALL_SPEAKERS"
         ))
         
         row = 1
@@ -403,19 +374,20 @@ async def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict[str, an
 
 
 async def on_connect() -> None:
-    """Handle Remote connection with reboot survival - ENHANCED."""
+    """Handle Remote connection with reboot survival - MusicCast pattern."""
     global _config, _entities_ready
     
-    _LOG.info("UC Remote connected. Checking configuration state...")
+    _LOG.info("🔌 UC Remote connected. Checking configuration state...")
     
     if not _config:
         _config = HeosConfig(api.config_dir_path)
     
+    # CRITICAL: Reload config from disk for reboot survival
     _config.reload_from_disk()
     
     # If configured but entities not ready, initialize them now
     if _config.is_configured() and not _entities_ready:
-        _LOG.info("Configuration found but entities missing, reinitializing...")
+        _LOG.info("⚠️ Configuration found but entities missing, reinitializing...")
         try:
             await _initialize_entities()
         except Exception as e:
@@ -437,14 +409,12 @@ async def on_connect() -> None:
 
 async def on_disconnect() -> None:
     """Handle Remote disconnection."""
-    _LOG.info("UC Remote disconnected")
+    _LOG.info("🔌 UC Remote disconnected")
     await api.set_device_state(DeviceStates.DISCONNECTED)
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """
-    Handle entity subscriptions with race condition protection - ENHANCED LOGGING.
-    """
+    """Handle entity subscriptions with race condition protection - MusicCast pattern."""
     _LOG.info(f"📋 Entities subscription requested: {entity_ids}")
     
     # Guard against race condition
@@ -456,11 +426,8 @@ async def on_subscribe_entities(entity_ids: List[str]):
             _LOG.error("Cannot recover - no configuration available")
             return
     
-    _LOG.info(f"✓ Entities ready flag: {_entities_ready}")
-    _LOG.info(f"✓ Media players: {list(_media_players.keys())}")
-    _LOG.info(f"✓ Remotes: {list(_remotes.keys())}")
+    _LOG.info(f"✓ Entities ready - processing {len(entity_ids)} subscriptions")
     
-    # Process subscriptions
     for entity_id in entity_ids:
         found = False
         
@@ -507,13 +474,11 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """
-    Main entry point with pre-initialization for reboot survival - CRITICAL FIX.
-    """
+    """Main entry point with pre-initialization for reboot survival - MusicCast pattern."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
-    _LOG.info("Starting HEOS integration driver with intelligent detection")
+    _LOG.info("Starting HEOS integration driver with MusicCast reboot survival pattern")
     
     try:
         loop = asyncio.get_running_loop()
@@ -521,15 +486,11 @@ async def main():
         
         _config = HeosConfig(api.config_dir_path)
         
-        # CRITICAL FIX: Pre-initialize entities synchronously if configured
         if _config.is_configured():
             _LOG.info("🔄 Found existing configuration, pre-initializing entities for reboot survival")
-            # Use await instead of create_task to ensure completion before CONNECT
-            try:
-                await _initialize_entities()
-                _LOG.info("✓ Pre-initialization complete - entities ready for subscription")
-            except Exception as e:
-                _LOG.error(f"⚠️ Pre-initialization failed: {e}")
+            # Use await to ensure completion before UC Remote connects
+            await _initialize_entities()
+            _LOG.info("✓ Pre-initialization complete - entities ready for subscription")
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
