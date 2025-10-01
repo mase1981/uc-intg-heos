@@ -1,5 +1,5 @@
 """
-HEOS Remote entity 
+HEOS Remote entity.
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
@@ -83,8 +83,14 @@ class HeosRemote(Remote):
         _LOG.info(f"Initializing HEOS remote capabilities for {self._device_name}")
         
         try:
-            # Rebuild UI pages with current device capabilities
-            from uc_intg_heos.driver import _build_dynamic_ui_pages, _build_simple_commands
+            # Check if we can rebuild (coordinator must exist for dynamic UI)
+            from uc_intg_heos.driver import _coordinator, _build_dynamic_ui_pages, _build_simple_commands
+            
+
+            if _coordinator is None:
+                _LOG.info(f"Initial setup for {self._device_name} - using pre-built UI")
+                self._capabilities_initialized = True
+                return
             
             if self._all_players:
                 # Rebuild UI pages
@@ -115,11 +121,9 @@ class HeosRemote(Remote):
         await self.push_update()
     
     async def push_update(self) -> None:
-        """
-        Update remote entity state and rebuild UI if needed.
-        CRITICAL: This is called after reboot - must rebuild UI pages.
-        """
+
         try:
+            # CRITICAL FIX: Rebuild UI if not initialized (MusicCast pattern)
             if not self._capabilities_initialized:
                 _LOG.info(f"⚠️ Remote {self._device_name} UI not initialized, rebuilding...")
                 await self.initialize_capabilities()
