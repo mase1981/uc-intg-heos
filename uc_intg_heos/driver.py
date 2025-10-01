@@ -150,6 +150,8 @@ async def _detect_device_capabilities(player: HeosPlayer) -> Dict[str, Any]:
         'favorites_count': len(_coordinator.favorites)
     }
     
+    _LOG.info(f"Analyzing capabilities for {player.name}")
+    
     # Basic controls - all HEOS devices support these
     capabilities['basic_controls'] = {
         'play': True,
@@ -173,7 +175,7 @@ async def _detect_device_capabilities(player: HeosPlayer) -> Dict[str, Any]:
     # Detect actual inputs for THIS device
     for input_source in _coordinator.inputs:
         # Check if input belongs to this player by matching media_id pattern or availability
-        input_name = input_source.name.lower().replace(' ', '_')
+        input_name = input_source.name.lower().replace(' ', '_').replace('-', '_')
         capabilities['inputs'][input_name] = True
     
     # Get available music services (account-wide)
@@ -229,7 +231,7 @@ def _build_dynamic_simple_commands(player: HeosPlayer, capabilities: Dict, all_p
                 safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
                 commands.append(f"GROUP_WITH_{safe_name}")
         
-        _LOG.debug(f"Added {len(all_players)+1} grouping commands (including GROUP_ALL_SPEAKERS) for {player.name}")
+        _LOG.debug(f"Added {len(all_players)} grouping commands (including GROUP_ALL_SPEAKERS) for {player.name}")
     
     # Favorites - only if they exist
     if capabilities['supports_favorites'] and capabilities['favorites_count'] > 0:
@@ -305,7 +307,7 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
         for other_player_id, other_player in all_players.items():
             if other_player_id != player.player_id:
                 safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
-                display_name = other_player.name[:20]  # Truncate long names
+                display_name = other_player.name.replace('(L)', '').replace('(R)', '')[:20].strip()  # Truncate long names
                 page3.add(create_ui_text(
                     f"+ {display_name}",
                     0, row,
@@ -318,7 +320,7 @@ def _build_dynamic_ui_pages(player: HeosPlayer, capabilities: Dict, all_players:
         if row < 6:
             page3.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
         pages.append(page3)
-        _LOG.debug(f"Created grouping page with GROUP_ALL_SPEAKERS and {len(all_players)-1} other devices")
+        _LOG.debug(f"Created grouping page with GROUP_ALL_SPEAKERS and {len(all_players)} other devices")
     
     # Page 4: Music Services (only available ones)
     if capabilities['available_services']:
@@ -382,6 +384,7 @@ async def on_connect() -> None:
     if _config.is_configured() and not _entities_ready:
         _LOG.info("Configuration found but entities missing, reinitializing...")
         try:
+            # We explicitly await this only on connect, if not already running in background
             await _initialize_entities()
         except Exception as e:
             _LOG.error(f"Failed to reinitialize entities: {e}")
@@ -407,17 +410,30 @@ async def on_disconnect() -> None:
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """Handle entity subscriptions with race condition protection."""
+    """Handle entity subscriptions with race condition protection. - FIX APPLIED HERE"""
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
-    # Guard against race condition
+
+    if not _entities_ready and _initialization_lock.locked():
+        _LOG.warning("RACE CONDITION: Subscription requested before initialization complete. Waiting on lock.")
+        async with _initialization_lock:
+            pass # Wait until initialization task releases the lock.
+            
+    # After waiting on the lock, the state should be correct.
+    if not _entities_ready and _config and _config.is_configured():
+         _LOG.error("RACE CONDITION: Initialization state is not ready. Manually attempting sync initialization.")
+         try:
+              await _initialize_entities()
+         except Exception as e:
+              _LOG.error(f"Failed to recover entity state for subscriptions: {e}")
+              return
+    
     if not _entities_ready:
-        _LOG.error("RACE CONDITION: Subscription before entities ready! Attempting recovery...")
-        if _config and _config.is_configured():
-            await _initialize_entities()
-        else:
-            _LOG.error("Cannot recover - no configuration available")
-            return
+        _LOG.error("Cannot process subscription - entities are not ready and configuration is not valid.")
+        return
+    
+    # After ensuring entities are ready, proceed with pushing updates
+    _LOG.info(f"Entities ready - processing {len(entity_ids)} subscriptions") # [cite: 291, 1122]
     
     for entity_id in entity_ids:
         # Check media players
@@ -465,7 +481,6 @@ async def main():
         loop = asyncio.get_running_loop()
         api = IntegrationAPI(loop)
         
-        # CRITICAL: Pre-initialize if already configured (reboot survival)
         _config = HeosConfig(api.config_dir_path)
         if _config.is_configured():
             _LOG.info("Found existing configuration, attempting pre-initialization for reboot survival")
