@@ -220,7 +220,6 @@ def _build_dynamic_simple_commands(player: HeosPlayer, capabilities: Dict, all_p
     if len(all_players) > 1:
         commands.append("LEAVE_GROUP")
         
-        # CRITICAL FIX: Add GROUP_ALL_SPEAKERS command
         commands.append("GROUP_ALL_SPEAKERS")
         
         # Add specific group commands for each other device
@@ -468,7 +467,10 @@ async def main():
         _config = HeosConfig(api.config_dir_path)
         if _config.is_configured():
             _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
-            loop.create_task(_initialize_entities())
+            try:
+                await _initialize_entities()
+            except Exception as e:
+                _LOG.error(f"Failed to pre-initialize entities: {e}", exc_info=True)
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
