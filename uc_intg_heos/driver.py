@@ -220,6 +220,7 @@ def _build_dynamic_simple_commands(player: HeosPlayer, capabilities: Dict, all_p
     if len(all_players) > 1:
         commands.append("LEAVE_GROUP")
         
+        # Add GROUP_ALL_SPEAKERS command
         commands.append("GROUP_ALL_SPEAKERS")
         
         # Add specific group commands for each other device
@@ -464,13 +465,22 @@ async def main():
         loop = asyncio.get_running_loop()
         api = IntegrationAPI(loop)
         
+        # CRITICAL: Pre-initialize if already configured (reboot survival)
         _config = HeosConfig(api.config_dir_path)
         if _config.is_configured():
-            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
-            try:
-                await _initialize_entities()
-            except Exception as e:
-                _LOG.error(f"Failed to pre-initialize entities: {e}", exc_info=True)
+            _LOG.info("Found existing configuration, attempting pre-initialization for reboot survival")
+            
+            # FIXED: Use create_task with graceful error handling - don't block startup
+            async def safe_pre_init():
+                try:
+                    await _initialize_entities()
+                    _LOG.info("Pre-initialization succeeded - entities ready before remote connects")
+                except Exception as e:
+                    _LOG.warning(f"Pre-initialization failed (HEOS devices may not be ready yet): {e}")
+                    _LOG.info("Entity initialization will be retried when remote connects")
+            
+            # Start pre-init in background - don't wait for it
+            loop.create_task(safe_pre_init())
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
