@@ -1,5 +1,5 @@
 """
-HEOS Integration Driver.
+HEOS Integration Driver 
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
@@ -103,6 +103,7 @@ async def _initialize_entities():
             else:
                 _LOG.info("Single device detected - media player only (no remote needed)")
             
+            # Mark entities as ready AFTER all added to both collections
             _entities_ready = True
             
             _LOG.info(f"✓ HEOS integration ready: {len(_media_players)} media players, {len(_remotes)} remotes")
@@ -146,13 +147,14 @@ async def _create_intelligent_remotes(players: Dict[int, HeosPlayer]):
             simple_commands=simple_commands
         )
         
+        remote.set_all_players(players)
+        
         await remote.initialize()
         
         _remotes[player_id] = remote
         
-        # CRITICAL FIX: MusicCast pattern - add to BOTH collections
         api.available_entities.add(remote)
-        api.configured_entities.add(remote)  # ✅ ADDED for reboot survival
+        api.configured_entities.add(remote)
         
         _LOG.info(f"✓ Created intelligent remote: {remote.id}")
 
@@ -382,7 +384,6 @@ async def on_connect() -> None:
     if not _config:
         _config = HeosConfig(api.config_dir_path)
     
-    # CRITICAL: Reload config from disk for reboot survival
     _config.reload_from_disk()
     
     # If configured but entities not ready, initialize them now
