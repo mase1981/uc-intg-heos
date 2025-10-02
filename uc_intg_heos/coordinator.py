@@ -5,7 +5,9 @@ HEOS Integration Coordinator
 """
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 from datetime import datetime
 
@@ -52,6 +54,77 @@ class HeosCoordinator:
         
         # Update debouncing
         self._update_sources_task: Optional[asyncio.Task] = None
+        
+        # Cache for reboot survival
+        self._cache_file = config.config_dir / "heos_cache.json"
+        self._cached_data = self._load_cache()
+
+    def _load_cache(self) -> Dict[str, Any]:
+        """Load cached coordinator data from disk for instant access."""
+        try:
+            if self._cache_file.exists():
+                with open(self._cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    _LOG.info(f"Loaded cached data: {len(data.get('favorites', {}))} favorites, "
+                             f"{len(data.get('inputs', []))} inputs, "
+                             f"{len(data.get('music_sources', {}))} services")
+                    return data
+        except Exception as e:
+            _LOG.error(f"Failed to load cache: {e}")
+        return {}
+    
+    def _save_cache(self):
+        """Save coordinator data to cache for next boot."""
+        try:
+            cache_data = {
+                'favorites': {
+                    str(k): {'name': v.name, 'media_id': getattr(v, 'media_id', '')}
+                    for k, v in self._favorites.items()
+                },
+                'inputs': [
+                    {'name': inp.name} for inp in self._inputs
+                ],
+                'music_sources': {
+                    str(k): {'name': v.name, 'available': v.available}
+                    for k, v in self._music_sources.items()
+                },
+                'playlists': [
+                    {'name': pl.name} for pl in self._playlists
+                ],
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Atomic write
+            temp_file = self._cache_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            temp_file.replace(self._cache_file)
+            
+            _LOG.info("Saved coordinator data to cache")
+        except Exception as e:
+            _LOG.error(f"Failed to save cache: {e}")
+    
+    def get_cached_favorites_count(self) -> int:
+        """Get favorites count from cache (instant, no network)."""
+        return len(self._cached_data.get('favorites', {}))
+    
+    def get_cached_favorite_names(self) -> Dict[int, str]:
+        """Get favorite names from cache."""
+        favorites = self._cached_data.get('favorites', {})
+        return {int(k): v['name'] for k, v in favorites.items()}
+    
+    def get_cached_inputs(self) -> List[str]:
+        """Get input names from cache (instant, no network)."""
+        return [inp['name'] for inp in self._cached_data.get('inputs', [])]
+    
+    def get_cached_services(self) -> List[str]:
+        """Get service names from cache (instant, no network)."""
+        sources = self._cached_data.get('music_sources', {})
+        return [s['name'] for s in sources.values() if s.get('available')]
+    
+    def get_cached_playlists_available(self) -> bool:
+        """Check if playlists are available from cache."""
+        return len(self._cached_data.get('playlists', [])) > 0
 
     @property
     def host(self) -> str:
@@ -128,6 +201,9 @@ class HeosCoordinator:
             # Load initial data with error handling
             await self._async_update_groups()
             await self._async_update_sources()
+            
+            # Save cache for next boot
+            self._save_cache()
             
             _LOG.info(f"HEOS coordinator setup complete - {len(self.heos.players)} players found")
             
@@ -234,6 +310,7 @@ class HeosCoordinator:
         # Refresh sources and notify entities - with error handling
         try:
             await self._async_update_sources()
+            self._save_cache()
         except Exception as e:
             _LOG.error(f"Error updating sources after reconnection: {e}")
         
@@ -271,6 +348,7 @@ class HeosCoordinator:
         try:
             await asyncio.sleep(2.0)
             await self._async_update_sources()
+            self._save_cache()
         except asyncio.CancelledError:
             pass
 
@@ -325,7 +403,7 @@ class HeosCoordinator:
                 _LOG.info(f"Loaded {len(self._favorites)} HEOS favorites: {[f.name for f in self._favorites.values()]}")
             except HeosError as error:
                 _LOG.error(f"Unable to retrieve HEOS favorites: {error}")
-                self._favorites = {}  # Clear favorites on error
+                self._favorites = {}
             except KeyError as e:
                 _LOG.error(f"Favorites data missing required field: {e}")
                 self._favorites = {}
@@ -418,7 +496,6 @@ class HeosCoordinator:
                 return source_id, source
         return None
 
-    # Correct pyheos API methods for browsing
     async def browse_music_source(self, source_id: int):
         """Browse a music source using correct pyheos API."""
         try:
@@ -426,7 +503,6 @@ class HeosCoordinator:
             result = await self.heos.browse(source_id)
             _LOG.debug(f"Browse result type: {type(result)}")
             
-            # Handle BrowseResult object properly
             if hasattr(result, 'items'):
                 items = result.items
                 _LOG.debug(f"Found items attribute with {len(items)} items")
@@ -443,7 +519,6 @@ class HeosCoordinator:
                 _LOG.debug(f"Result is already a list with {len(result)} items")
                 return result
             else:
-                # Try to iterate over the result object
                 try:
                     items = list(result)
                     _LOG.debug(f"Converted result to list with {len(items)} items")
@@ -463,7 +538,6 @@ class HeosCoordinator:
             result = await self.heos.browse(source_id, container_id)
             _LOG.debug(f"Browse container result type: {type(result)}")
             
-            # Handle BrowseResult object properly
             if hasattr(result, 'items'):
                 items = result.items
                 _LOG.debug(f"Found items attribute with {len(items)} items")
@@ -480,7 +554,6 @@ class HeosCoordinator:
                 _LOG.debug(f"Result is already a list with {len(result)} items")
                 return result
             else:
-                # Try to iterate over the result object
                 try:
                     items = list(result)
                     _LOG.debug(f"Converted result to list with {len(items)} items")
