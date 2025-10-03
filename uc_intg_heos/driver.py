@@ -34,7 +34,6 @@ _LOG = logging.getLogger(__name__)
 
 
 async def _initialize_entities():
-    """Initialize entities following WiiM pattern - simple construction then capability init."""
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -46,19 +45,16 @@ async def _initialize_entities():
             _LOG.info("Integration not configured, skipping entity initialization")
             return
             
-        _LOG.info("Initializing HEOS entities (WiiM pattern)...")
+        _LOG.info("Initializing HEOS entities...")
         
         try:
-            # Clear existing entities
             api.available_entities.clear()
             _media_players.clear()
             _remotes.clear()
             
-            # Create and setup coordinator
             _coordinator = HeosCoordinator(api, _config)
             await _coordinator.async_setup()
             
-            # Get all HEOS players from coordinator
             players = _coordinator.heos.players
             if not players:
                 _LOG.warning("No HEOS devices found on account")
@@ -66,7 +62,6 @@ async def _initialize_entities():
 
             _LOG.info(f"Found {len(players)} HEOS device(s)")
             
-            # Create media players immediately
             for player_id, player in players.items():
                 _LOG.info(f"Creating media player for: {player.name} (ID: {player_id})")
                 
@@ -79,21 +74,15 @@ async def _initialize_entities():
                 
                 _LOG.info(f"Created media player entity: {media_player.id}")
             
-            # Create remotes using WiiM pattern (simple construction)
             if len(players) > 1:
-                _LOG.info("Multiple devices - creating remotes with WiiM pattern")
-                await _create_remotes_wiim_pattern(players)
+                _LOG.info("Multiple devices - creating remotes")
+                await _create_remotes(players)
             else:
-                _LOG.info("Single device - media player only (no remote needed)")
+                _LOG.info("Single device - media player only")
             
-            # Mark entities as ready BEFORE background tasks
             _entities_ready = True
             
-            _LOG.info(f"✓ All entities created and ready: {len(_media_players)} media players, {len(_remotes)} remotes")
-            
-            # Background task: Initialize full remote capabilities
-            if len(_remotes) > 0:
-                asyncio.create_task(_initialize_remote_capabilities())
+            _LOG.info(f"All entities ready: {len(_media_players)} media players, {len(_remotes)} remotes")
             
         except Exception as e:
             _LOG.error(f"Failed to initialize HEOS entities: {e}", exc_info=True)
@@ -104,62 +93,35 @@ async def _initialize_entities():
             raise
 
 
-async def _create_remotes_wiim_pattern(players: Dict[int, HeosPlayer]):
-    """Create remotes using WiiM pattern - simple construction, then initialize capabilities."""
+async def _create_remotes(players: Dict[int, HeosPlayer]):
     global _remotes, _coordinator, api
     
     for player_id, player in players.items():
-        _LOG.info(f"Creating remote for: {player.name} (WiiM pattern)")
+        _LOG.info(f"Creating remote for: {player.name}")
         
         try:
-            # STEP 1: Simple construction with minimal setup (WiiM pattern)
             remote = HeosRemote(
                 heos_player=player,
                 device_name=player.name
             )
             
-            # STEP 2: Set external dependencies
             remote._api = api
             remote.set_coordinator(_coordinator, _coordinator.heos, players)
             
-            # STEP 3: Basic initialization
             await remote.initialize()
+            await remote.initialize_capabilities()
             
-            # STEP 4: Add to collections
             _remotes[player_id] = remote
             api.available_entities.add(remote)
             api.configured_entities.add(remote)
             
-            _LOG.info(f"✓ Created remote for {player.name} with basic setup")
+            _LOG.info(f"Created remote for {player.name} with full capabilities")
             
         except Exception as e:
             _LOG.error(f"Failed to create remote for {player.name}: {e}", exc_info=True)
 
 
-async def _initialize_remote_capabilities():
-    """Background task: Initialize full remote capabilities after entities are registered (WiiM pattern)."""
-    global _remotes, _coordinator
-    
-    try:
-        # Small delay to ensure entities are fully registered
-        await asyncio.sleep(2)
-        
-        _LOG.info("Initializing full remote capabilities...")
-        
-        for remote in _remotes.values():
-            try:
-                await remote.initialize_capabilities()
-            except Exception as e:
-                _LOG.error(f"Error initializing capabilities for remote {remote.id}: {e}")
-        
-        _LOG.info("✓ All remote capabilities initialized")
-        
-    except Exception as e:
-        _LOG.error(f"Error in capability initialization task: {e}", exc_info=True)
-
-
 async def on_connect() -> None:
-    """Handle Remote connection with reboot survival."""
     global _config, _entities_ready
     
     _LOG.info("UC Remote connected. Checking configuration state...")
@@ -169,7 +131,6 @@ async def on_connect() -> None:
     
     _config.reload_from_disk()
     
-    # If configured but entities not ready, initialize them now
     if _config.is_configured() and not _entities_ready:
         _LOG.info("Configuration found but entities missing, reinitializing...")
         try:
@@ -179,7 +140,6 @@ async def on_connect() -> None:
             await api.set_device_state(DeviceStates.ERROR)
             return
     
-    # Set appropriate device state
     if _config.is_configured() and _entities_ready:
         _LOG.info("Configuration valid and entities ready - setting CONNECTED state")
         await api.set_device_state(DeviceStates.CONNECTED)
@@ -192,16 +152,13 @@ async def on_connect() -> None:
 
 
 async def on_disconnect() -> None:
-    """Handle Remote disconnection."""
     _LOG.info("UC Remote disconnected")
     await api.set_device_state(DeviceStates.DISCONNECTED)
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """Handle entity subscriptions with race condition protection."""
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
-    # Guard against race condition
     if not _entities_ready:
         _LOG.error("RACE CONDITION: Subscription before entities ready! Attempting recovery...")
         if _config and _config.is_configured():
@@ -211,13 +168,11 @@ async def on_subscribe_entities(entity_ids: List[str]):
             return
     
     for entity_id in entity_ids:
-        # Check media players
         for player_id, media_player in _media_players.items():
             if entity_id == media_player.id:
                 await media_player.push_update()
                 break
         
-        # Check remotes
         for player_id, remote in _remotes.items():
             if entity_id == remote.id:
                 await remote.push_update()
@@ -225,12 +180,10 @@ async def on_subscribe_entities(entity_ids: List[str]):
 
 
 async def on_unsubscribe_entities(entity_ids: List[str]):
-    """Handle entity unsubscriptions."""
     _LOG.info(f"Unsubscribed from entities: {entity_ids}")
 
 
 async def setup_handler(msg: SetupAction) -> SetupAction:
-    """Handle setup flow and create entities."""
     global _setup_manager
     
     if not _setup_manager:
@@ -246,11 +199,10 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """Main entry point with pre-initialization for reboot survival."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
-    _LOG.info("Starting HEOS integration driver with WiiM pattern")
+    _LOG.info("Starting HEOS integration driver")
     
     try:
         loop = asyncio.get_running_loop()
@@ -262,13 +214,11 @@ async def main():
             _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
             loop.create_task(_initialize_entities())
         
-        # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
         api.add_listener(Events.DISCONNECT, on_disconnect)
         api.add_listener(Events.SUBSCRIBE_ENTITIES, on_subscribe_entities)
         api.add_listener(Events.UNSUBSCRIBE_ENTITIES, on_unsubscribe_entities)
         
-        # Initialize setup manager
         _setup_manager = HeosSetupManager(_config)
         
         await api.init("driver.json", setup_handler)
@@ -285,12 +235,10 @@ async def main():
 
 
 async def shutdown():
-    """Shutdown integration cleanly."""
     global _coordinator, _media_players, _remotes
     
     _LOG.info("Shutting down HEOS integration")
     
-    # Shutdown media players
     for player in _media_players.values():
         if hasattr(player, 'shutdown'):
             try:
@@ -298,7 +246,6 @@ async def shutdown():
             except Exception as e:
                 _LOG.error(f"Error shutting down media player: {e}")
     
-    # Shutdown remotes
     for remote in _remotes.values():
         if hasattr(remote, 'shutdown'):
             try:
@@ -306,7 +253,6 @@ async def shutdown():
             except Exception as e:
                 _LOG.error(f"Error shutting down remote: {e}")
     
-    # Shutdown coordinator
     if _coordinator:
         try:
             await _coordinator.async_shutdown()
