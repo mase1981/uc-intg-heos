@@ -124,30 +124,15 @@ async def _create_remotes(players: Dict[int, HeosPlayer]):
 async def on_connect() -> None:
     global _config, _entities_ready
     
-    _LOG.info("UC Remote connected. Checking configuration state...")
+    _LOG.info("UC Remote connected")
     
     if not _config:
         _config = HeosConfig(api.config_dir_path)
     
-    _config.reload_from_disk()
-    
-    if _config.is_configured() and not _entities_ready:
-        _LOG.info("Configuration found but entities missing, reinitializing...")
-        try:
-            await _initialize_entities()
-        except Exception as e:
-            _LOG.error(f"Failed to reinitialize entities: {e}")
-            await api.set_device_state(DeviceStates.ERROR)
-            return
-    
-    if _config.is_configured() and _entities_ready:
-        _LOG.info("Configuration valid and entities ready - setting CONNECTED state")
+    if _entities_ready:
         await api.set_device_state(DeviceStates.CONNECTED)
-    elif not _config.is_configured():
-        _LOG.info("No configuration found - setting DISCONNECTED state")
-        await api.set_device_state(DeviceStates.DISCONNECTED)
     else:
-        _LOG.error("Configuration exists but entities failed - setting ERROR state")
+        _LOG.warning("Entities not ready on connect")
         await api.set_device_state(DeviceStates.ERROR)
 
 
@@ -160,12 +145,8 @@ async def on_subscribe_entities(entity_ids: List[str]):
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
     if not _entities_ready:
-        _LOG.error("RACE CONDITION: Subscription before entities ready! Attempting recovery...")
-        if _config and _config.is_configured():
-            await _initialize_entities()
-        else:
-            _LOG.error("Cannot recover - no configuration available")
-            return
+        _LOG.error("Subscription before entities ready!")
+        return
     
     for entity_id in entity_ids:
         for player_id, media_player in _media_players.items():
@@ -210,10 +191,6 @@ async def main():
         
         _config = HeosConfig(api.config_dir_path)
         
-        if _config.is_configured():
-            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
-            loop.create_task(_initialize_entities())
-        
         api.add_listener(Events.CONNECT, on_connect)
         api.add_listener(Events.DISCONNECT, on_disconnect)
         api.add_listener(Events.SUBSCRIBE_ENTITIES, on_subscribe_entities)
@@ -222,7 +199,13 @@ async def main():
         _setup_manager = HeosSetupManager(_config)
         
         await api.init("driver.json", setup_handler)
-        await api.set_device_state(DeviceStates.DISCONNECTED)
+        
+        if _config.is_configured():
+            _LOG.info("Configuration exists, initializing entities synchronously")
+            await _initialize_entities()
+            await api.set_device_state(DeviceStates.CONNECTED)
+        else:
+            await api.set_device_state(DeviceStates.DISCONNECTED)
         
         await asyncio.Future()
         
