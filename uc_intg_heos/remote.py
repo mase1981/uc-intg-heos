@@ -18,20 +18,14 @@ _LOG = logging.getLogger(__name__)
 
 
 class HeosRemote(Remote):
-    """HEOS Remote entity with dynamic capability discovery."""
     
     def __init__(self, heos_player: HeosPlayer, device_name: str):
-        """Initialize remote entity with MINIMAL setup (WiiM pattern)."""
         entity_id = f"heos_{device_name.lower().replace(' ', '_').replace('-', '_')}_remote"
         
-        # Start with basic features and minimal UI
         features = ["send_cmd"]
         attributes = {"state": "available"}
         
-        # Build minimal base commands
         simple_commands = self._build_base_commands()
-        
-        # Build minimal main page (as DICTIONARY)
         ui_pages = [self._create_main_page()]
         
         super().__init__(
@@ -44,35 +38,29 @@ class HeosRemote(Remote):
             cmd_handler=self.handle_cmd
         )
         
-        # Store references
         self._heos_player = heos_player
         self._device_name = device_name
         self._player_id = heos_player.player_id
         
-        # Will be set externally
         self._api = None
         self._heos = None
         self._coordinator = None
         self._capabilities = {}
         self._all_players = {}
         
-        # Initialization flag
         self._capabilities_initialized = False
         
-        # Command throttling
         self._last_command_time: Dict[str, float] = {}
         self._command_lock = asyncio.Lock()
         
         _LOG.info(f"Created HEOS Remote: {device_name} ({entity_id})")
 
     def set_coordinator(self, coordinator, heos: Heos, all_players: Dict):
-        """Set coordinator and HEOS instance (called externally)."""
         self._coordinator = coordinator
         self._heos = heos
         self._all_players = all_players
 
     def _build_base_commands(self) -> List[str]:
-        """Build base command list (always available)."""
         return [
             "PLAY", "PAUSE", "STOP", "PLAY_PAUSE",
             "VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE",
@@ -82,7 +70,6 @@ class HeosRemote(Remote):
         ]
 
     def _create_main_page(self) -> Dict[str, Any]:
-        """Create main transport control page as DICTIONARY."""
         return {
             'page_id': 'transport',
             'name': 'Playback',
@@ -112,28 +99,21 @@ class HeosRemote(Remote):
         }
 
     async def initialize(self):
-        """Basic initialization."""
         await self.push_update()
         _LOG.info(f"HEOS Remote initialized: {self._device_name}")
 
     async def initialize_capabilities(self):
-        """Initialize full capabilities after coordinator is ready (WiiM pattern)."""
         if self._capabilities_initialized or not self._coordinator:
             return
         
         _LOG.info(f"Initializing capabilities for {self._device_name}...")
         
         try:
-            # Build capabilities from coordinator
             self._capabilities = await self._detect_device_capabilities()
             
-            # Build extended commands
             extended_commands = self._build_extended_commands()
-            
-            # Build all UI pages (as DICTIONARIES)
             all_pages = self._create_dynamic_pages()
             
-            # Update entity options (WiiM pattern)
             self.options = {
                 'simple_commands': extended_commands,
                 'user_interface': {'pages': all_pages}
@@ -142,18 +122,16 @@ class HeosRemote(Remote):
             self.attributes["state"] = "available"
             self.attributes["capabilities"] = self._capabilities
             
-            # Force update
-            await self.push_update()
+            self._force_integration_update()
             
             self._capabilities_initialized = True
-            _LOG.info(f"✓ Remote capabilities initialized for {self._device_name}: "
+            _LOG.info(f"Remote capabilities initialized for {self._device_name}: "
                      f"{len(extended_commands)} commands, {len(all_pages)} pages")
             
         except Exception as e:
             _LOG.error(f"Error initializing capabilities: {e}", exc_info=True)
 
     async def _detect_device_capabilities(self) -> Dict[str, Any]:
-        """Detect device capabilities from coordinator."""
         capabilities = {
             'basic_controls': {'play': True, 'pause': True, 'stop': True},
             'volume_controls': {'volume_up': True, 'volume_down': True, 'mute': True},
@@ -201,15 +179,12 @@ class HeosRemote(Remote):
         return capabilities
 
     def _build_extended_commands(self) -> List[str]:
-        """Build full command list based on capabilities."""
         commands = self._build_base_commands()
         
-        # Add inputs
         for input_name in self._capabilities['inputs'].keys():
             command_name = input_name.upper().replace(' ', '_')
             commands.append(f"INPUT_{command_name}")
         
-        # Add grouping (if multiple devices)
         if len(self._all_players) > 1:
             commands.append("LEAVE_GROUP")
             commands.append("GROUP_ALL_SPEAKERS")
@@ -219,46 +194,37 @@ class HeosRemote(Remote):
                     safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
                     commands.append(f"GROUP_WITH_{safe_name}")
         
-        # Add favorites
         if self._capabilities['supports_favorites'] and self._capabilities['favorites_count'] > 0:
             num_favorites = min(self._capabilities['favorites_count'], 10)
             for i in range(1, num_favorites + 1):
                 commands.append(f"FAVORITE_{i}")
         
-        # Add services
         for service_name in self._capabilities['available_services']:
             safe_name = service_name.upper().replace(' ', '_')
             commands.append(f"SERVICE_{safe_name}")
         
-        # Add playlists
         if self._capabilities['playlists_available']:
             commands.append("PLAYLISTS")
         
-        # Queue management
         commands.extend(["CLEAR_QUEUE", "QUEUE_INFO"])
         
         return commands
 
     def _create_dynamic_pages(self) -> List[Dict[str, Any]]:
-        """Create all UI pages as DICTIONARIES."""
         pages = [self._create_main_page()]
         
-        # Add input page if inputs exist
         if self._capabilities['inputs']:
             if input_page := self._create_inputs_page():
                 pages.append(input_page)
         
-        # Add grouping page if multiple devices
         if len(self._all_players) > 1:
             if grouping_page := self._create_grouping_page():
                 pages.append(grouping_page)
         
-        # Add services page
         if self._capabilities['available_services']:
             if services_page := self._create_services_page():
                 pages.append(services_page)
         
-        # Add favorites page
         if self._capabilities['supports_favorites'] and self._capabilities['favorites_count'] > 0:
             if favorites_page := self._create_favorites_page():
                 pages.append(favorites_page)
@@ -266,7 +232,6 @@ class HeosRemote(Remote):
         return pages
 
     def _create_inputs_page(self) -> Optional[Dict[str, Any]]:
-        """Create inputs page as DICTIONARY."""
         page = {
             'page_id': 'inputs',
             'name': 'Inputs',
@@ -296,7 +261,6 @@ class HeosRemote(Remote):
         return page if page['items'] else None
 
     def _create_grouping_page(self) -> Optional[Dict[str, Any]]:
-        """Create grouping page as DICTIONARY."""
         page = {
             'page_id': 'grouping',
             'name': 'Grouping',
@@ -342,7 +306,6 @@ class HeosRemote(Remote):
         return page
 
     def _create_services_page(self) -> Optional[Dict[str, Any]]:
-        """Create services page as DICTIONARY."""
         page = {
             'page_id': 'services',
             'name': 'Services',
@@ -372,7 +335,6 @@ class HeosRemote(Remote):
         return page if page['items'] else None
 
     def _create_favorites_page(self) -> Optional[Dict[str, Any]]:
-        """Create favorites page as DICTIONARY."""
         page = {
             'page_id': 'favorites',
             'name': 'Favorites',
@@ -386,7 +348,6 @@ class HeosRemote(Remote):
         for i in range(1, num_favorites + 1):
             favorite_name = f"Favorite {i}"
             
-            # Get actual name from coordinator
             try:
                 if self._coordinator and i in self._coordinator.favorites:
                     favorite_name = self._coordinator.favorites[i].name[:12]
@@ -410,18 +371,22 @@ class HeosRemote(Remote):
         return page if page['items'] else None
 
     async def push_update(self):
-        """Push update to UC Remote."""
         if self._api and self._api.configured_entities.contains(self.id):
             self._api.configured_entities.update_attributes(self.id, self.attributes)
 
+    def _force_integration_update(self):
+        if self._api:
+            try:
+                self._api.configured_entities.update_attributes(self.id, self.attributes)
+            except:
+                pass
+
     async def handle_cmd(self, entity, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        """Handle remote commands with throttling."""
         async with self._command_lock:
             try:
                 actual_command = params.get("command", cmd_id) if params else cmd_id
                 _LOG.info(f"Executing HEOS Remote command: {actual_command} for {self._device_name}")
                 
-                # Throttle commands
                 import time
                 current_time = time.time()
                 last_time = self._last_command_time.get(actual_command, 0)
@@ -433,7 +398,6 @@ class HeosRemote(Remote):
                 
                 self._last_command_time[actual_command] = time.time()
                 
-                # Basic playback commands
                 if actual_command == "PLAY":
                     await self._heos.player_set_play_state(self._player_id, "play")
                     
@@ -448,7 +412,6 @@ class HeosRemote(Remote):
                     new_state = "pause" if str(current_state) == "PlayState.PLAY" else "play"
                     await self._heos.player_set_play_state(self._player_id, new_state)
                     
-                # Volume commands
                 elif actual_command == "VOLUME_UP":
                     await self._heos.player_volume_up(self._player_id, step=5)
                     
@@ -458,14 +421,12 @@ class HeosRemote(Remote):
                 elif actual_command == "MUTE_TOGGLE":
                     await self._heos.player_toggle_mute(self._player_id)
                     
-                # Navigation commands
                 elif actual_command == "NEXT":
                     await self._heos.player_play_next(self._player_id)
                     
                 elif actual_command == "PREVIOUS":
                     await self._heos.player_play_previous(self._player_id)
                     
-                # Repeat commands
                 elif actual_command == "REPEAT_OFF":
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.OFF, self._heos_player.shuffle)
                     
@@ -475,37 +436,30 @@ class HeosRemote(Remote):
                 elif actual_command == "REPEAT_ONE":
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.ON_ONE, self._heos_player.shuffle)
                     
-                # Shuffle commands
                 elif actual_command == "SHUFFLE_ON":
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, True)
                     
                 elif actual_command == "SHUFFLE_OFF":
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, False)
                     
-                # Input source commands
                 elif actual_command.startswith("INPUT_"):
                     await self._handle_input_commands(actual_command)
                     
-                # Group all speakers
                 elif actual_command == "GROUP_ALL_SPEAKERS":
                     await self._handle_group_all_speakers()
                     
-                # Group management
                 elif actual_command.startswith("GROUP_WITH_"):
                     await self._handle_grouping_commands_with_retry(actual_command)
                     
                 elif actual_command == "LEAVE_GROUP":
                     await self._handle_ungroup_command_with_retry()
                     
-                # Favorites
                 elif actual_command.startswith("FAVORITE_"):
                     await self._handle_favorite_command(actual_command)
                     
-                # Music services
                 elif actual_command.startswith("SERVICE_"):
                     await self._handle_service_command(actual_command)
                     
-                # Queue management
                 elif actual_command == "CLEAR_QUEUE":
                     await self._heos.player_clear_queue(self._player_id)
                     
@@ -524,7 +478,6 @@ class HeosRemote(Remote):
                 return StatusCodes.SERVER_ERROR
 
     async def _handle_input_commands(self, command: str):
-        """Handle input source commands."""
         input_name = command[len("INPUT_"):].lower()
         heos_input = f"inputs/{input_name}"
         
@@ -535,7 +488,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error playing input {input_name}: {e}")
 
     async def _handle_group_all_speakers(self):
-        """Handle creating a group with ALL available speakers."""
         try:
             all_players = self._heos.players
             
@@ -555,7 +507,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error creating all-speakers group: {e}")
 
     async def _handle_grouping_commands_with_retry(self, command: str):
-        """Handle group management commands."""
         target_name = command[len("GROUP_WITH_"):]
         
         try:
@@ -575,7 +526,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error grouping with {target_name}: {e}")
 
     async def _handle_ungroup_command_with_retry(self):
-        """Handle ungrouping player."""
         try:
             await self._heos.set_group([self._player_id])
             _LOG.info("Left group")
@@ -583,7 +533,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error leaving group: {e}")
 
     async def _handle_favorite_command(self, command: str):
-        """Handle favorite playback commands."""
         try:
             favorite_num = int(command.split("_")[-1])
             await self._heos.play_preset_station(self._player_id, favorite_num)
@@ -592,10 +541,8 @@ class HeosRemote(Remote):
             _LOG.error(f"Error playing favorite: {e}")
 
     async def _handle_service_command(self, command: str):
-        """Handle music service commands."""
         service_name = command[len("SERVICE_"):].replace('_', ' ')
         _LOG.info(f"Service command: {service_name} - use media player for actual playback")
 
     async def shutdown(self):
-        """Shutdown the remote entity."""
         _LOG.info(f"Shutting down HEOS Remote: {self._device_name}")
