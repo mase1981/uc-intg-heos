@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional
 import ucapi
 from ucapi import DeviceStates, Events, IntegrationAPI, StatusCodes
 from ucapi.api_definitions import SetupAction, SetupDriver, SetupComplete, SetupError
-from ucapi.ui import UiPage, Size, create_ui_icon, create_ui_text
 
 from pyheos import HeosPlayer
 
@@ -35,7 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 
 async def _initialize_entities():
-    """Initialize entities - create ALL entities immediately using cached data."""
+    """Initialize entities following WiiM pattern - simple construction then capability init."""
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -47,7 +46,7 @@ async def _initialize_entities():
             _LOG.info("Integration not configured, skipping entity initialization")
             return
             
-        _LOG.info("Initializing HEOS entities with cache-based approach...")
+        _LOG.info("Initializing HEOS entities (WiiM pattern)...")
         
         try:
             # Clear existing entities
@@ -80,21 +79,21 @@ async def _initialize_entities():
                 
                 _LOG.info(f"Created media player entity: {media_player.id}")
             
-            # CRITICAL: Create remotes IMMEDIATELY using cached data
+            # Create remotes using WiiM pattern (simple construction)
             if len(players) > 1:
-                _LOG.info("Multiple devices - creating remotes IMMEDIATELY with cached data")
-                await _create_remotes_with_cached_data(players)
+                _LOG.info("Multiple devices - creating remotes with WiiM pattern")
+                await _create_remotes_wiim_pattern(players)
             else:
                 _LOG.info("Single device - media player only (no remote needed)")
             
-            # Mark entities as ready BEFORE any background tasks
+            # Mark entities as ready BEFORE background tasks
             _entities_ready = True
             
             _LOG.info(f"✓ All entities created and ready: {len(_media_players)} media players, {len(_remotes)} remotes")
             
-            # Background task: Refresh remote UI with live data (doesn't block subscription)
+            # Background task: Initialize full remote capabilities
             if len(_remotes) > 0:
-                asyncio.create_task(_refresh_remote_ui_from_live_data())
+                asyncio.create_task(_initialize_remote_capabilities())
             
         except Exception as e:
             _LOG.error(f"Failed to initialize HEOS entities: {e}", exc_info=True)
@@ -105,262 +104,58 @@ async def _initialize_entities():
             raise
 
 
-async def _create_remotes_with_cached_data(players: Dict[int, HeosPlayer]):
-    """Create remotes IMMEDIATELY using cached data (no network delays)."""
+async def _create_remotes_wiim_pattern(players: Dict[int, HeosPlayer]):
+    """Create remotes using WiiM pattern - simple construction, then initialize capabilities."""
     global _remotes, _coordinator, api
     
-    # Get cached data (instant - no network calls)
-    cached_favorites_count = _coordinator.get_cached_favorites_count()
-    cached_favorite_names = _coordinator.get_cached_favorite_names()
-    cached_inputs = _coordinator.get_cached_inputs()
-    cached_services = _coordinator.get_cached_services()
-    cached_playlists_available = _coordinator.get_cached_playlists_available()
-    
-    _LOG.info(f"Using cached data: {cached_favorites_count} favorites, "
-             f"{len(cached_inputs)} inputs, {len(cached_services)} services")
-    
     for player_id, player in players.items():
-        _LOG.info(f"Creating remote for: {player.name} (using cached data)")
+        _LOG.info(f"Creating remote for: {player.name} (WiiM pattern)")
         
         try:
-            # Build capabilities from cache (instant)
-            capabilities = {
-                'basic_controls': {'play': True, 'pause': True, 'stop': True},
-                'volume_controls': {'volume_up': True, 'volume_down': True, 'mute': True},
-                'navigation': {'next': True, 'previous': True},
-                'inputs': {inp.lower().replace(' ', '_').replace('-', '_'): True for inp in cached_inputs},
-                'can_be_grouped': True,
-                'supports_favorites': cached_favorites_count > 0,
-                'available_services': cached_services,
-                'playlists_available': cached_playlists_available,
-                'favorites_count': cached_favorites_count
-            }
-            
-            # Build UI pages from cached data (instant)
-            ui_pages = _build_ui_pages_from_cache(player, capabilities, players, cached_favorites_count, cached_favorite_names)
-            
-            # Build commands from cached data (instant)
-            simple_commands = _build_commands_from_cache(player, capabilities, players)
-            
-            # Create remote immediately
+            # STEP 1: Simple construction with minimal setup (WiiM pattern)
             remote = HeosRemote(
                 heos_player=player,
-                device_name=player.name,
-                api=api,
-                capabilities=capabilities,
-                heos=_coordinator.heos,
-                ui_pages=ui_pages,
-                simple_commands=simple_commands
+                device_name=player.name
             )
             
+            # STEP 2: Set external dependencies
+            remote._api = api
+            remote.set_coordinator(_coordinator, _coordinator.heos, players)
+            
+            # STEP 3: Basic initialization
             await remote.initialize()
+            
+            # STEP 4: Add to collections
             _remotes[player_id] = remote
             api.available_entities.add(remote)
             api.configured_entities.add(remote)
             
-            _LOG.info(f"✓ Created remote for {player.name} with {len(simple_commands)} commands (cached data)")
+            _LOG.info(f"✓ Created remote for {player.name} with basic setup")
             
         except Exception as e:
             _LOG.error(f"Failed to create remote for {player.name}: {e}", exc_info=True)
 
 
-def _build_ui_pages_from_cache(player, capabilities, players, favorites_count, favorite_names):
-    """Build UI pages using cached data - no coordinator network access needed."""
-    pages = []
-    
-    # Page 1: Basic Transport Controls (always available)
-    page1 = UiPage(page_id="transport", name="Playback", grid=Size(4, 6))
-    page1.add(create_ui_icon("uc:play", 0, 0, cmd="PLAY"))
-    page1.add(create_ui_icon("uc:pause", 1, 0, cmd="PAUSE"))
-    page1.add(create_ui_icon("uc:stop", 2, 0, cmd="STOP"))
-    page1.add(create_ui_icon("uc:skip-forward", 3, 0, cmd="NEXT"))
-    page1.add(create_ui_icon("uc:skip-backward", 0, 1, cmd="PREVIOUS"))
-    page1.add(create_ui_icon("uc:volume-up", 1, 1, cmd="VOLUME_UP"))
-    page1.add(create_ui_icon("uc:volume-down", 2, 1, cmd="VOLUME_DOWN"))
-    page1.add(create_ui_icon("uc:mute", 3, 1, cmd="MUTE_TOGGLE"))
-    page1.add(create_ui_icon("uc:repeat", 0, 2, cmd="REPEAT_ALL"))
-    page1.add(create_ui_icon("uc:shuffle", 1, 2, cmd="SHUFFLE_ON"))
-    pages.append(page1)
-    
-    # Page 2: Inputs (from cache)
-    if capabilities['inputs']:
-        page2 = UiPage(page_id="inputs", name="Inputs", grid=Size(4, 6))
-        row, col = 0, 0
-        for input_name in sorted(capabilities['inputs'].keys()):
-            display_name = input_name.replace('_', ' ').title()
-            command_name = f"INPUT_{input_name.upper()}"
-            page2.add(create_ui_text(display_name, col, row, cmd=command_name))
-            col += 1
-            if col >= 4:
-                col = 0
-                row += 1
-                if row >= 6:
-                    break
-        pages.append(page2)
-    
-    # Page 3: Grouping
-    if len(players) > 1:
-        page3 = UiPage(page_id="grouping", name="Grouping", grid=Size(4, 6))
-        page3.add(create_ui_text("Group All", 0, 0, Size(4, 1), cmd="GROUP_ALL_SPEAKERS"))
-        
-        row = 1
-        for other_player_id, other_player in players.items():
-            if other_player_id != player.player_id:
-                safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
-                display_name = other_player.name[:20]
-                page3.add(create_ui_text(
-                    f"+ {display_name}",
-                    0, row,
-                    Size(4, 1),
-                    cmd=f"GROUP_WITH_{safe_name}"
-                ))
-                row += 1
-                if row >= 6:
-                    break
-        if row < 6:
-            page3.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
-        pages.append(page3)
-    
-    # Page 4: Music Services (from cache)
-    if capabilities['available_services']:
-        page4 = UiPage(page_id="services", name="Services", grid=Size(4, 6))
-        row, col = 0, 0
-        for service_name in sorted(capabilities['available_services']):
-            safe_name = service_name.upper().replace(' ', '_')
-            display_name = service_name[:15]
-            page4.add(create_ui_text(display_name, col, row, cmd=f"SERVICE_{safe_name}"))
-            col += 1
-            if col >= 4:
-                col = 0
-                row += 1
-                if row >= 6:
-                    break
-        pages.append(page4)
-    
-    # Page 5: Favorites (using cached names if available, otherwise generic)
-    if favorites_count > 0:
-        page5 = UiPage(page_id="favorites", name="Favorites", grid=Size(4, 6))
-        row, col = 0, 0
-        num_favorites = min(favorites_count, 10)
-        
-        for i in range(1, num_favorites + 1):
-            # Use cached name if available, otherwise generic
-            favorite_name = favorite_names.get(i, f"Favorite {i}")
-            if len(favorite_name) > 12:
-                favorite_name = favorite_name[:12]
-            
-            page5.add(create_ui_text(favorite_name, col, row, cmd=f"FAVORITE_{i}"))
-            col += 1
-            if col >= 4:
-                col = 0
-                row += 1
-                if row >= 6:
-                    break
-        
-        pages.append(page5)
-    
-    return pages
-
-
-def _build_commands_from_cache(player, capabilities, players):
-    """Build simple commands based on cached capabilities."""
-    commands = []
-    
-    # Basic playback
-    commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
-    
-    # Volume
-    commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
-    
-    # Navigation
-    commands.extend(["NEXT", "PREVIOUS"])
-    
-    # Repeat and shuffle
-    commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
-    
-    # Inputs
-    for input_name in capabilities['inputs'].keys():
-        command_name = input_name.upper().replace(' ', '_')
-        commands.append(f"INPUT_{command_name}")
-    
-    # Grouping
-    if len(players) > 1:
-        commands.append("LEAVE_GROUP")
-        commands.append("GROUP_ALL_SPEAKERS")
-        
-        for other_player_id, other_player in players.items():
-            if other_player_id != player.player_id:
-                safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
-                commands.append(f"GROUP_WITH_{safe_name}")
-    
-    # Favorites
-    if capabilities['supports_favorites'] and capabilities['favorites_count'] > 0:
-        num_favorites = min(capabilities['favorites_count'], 10)
-        for i in range(1, num_favorites + 1):
-            commands.append(f"FAVORITE_{i}")
-    
-    # Music services
-    for service_name in capabilities['available_services']:
-        safe_name = service_name.upper().replace(' ', '_')
-        commands.append(f"SERVICE_{safe_name}")
-    
-    # Playlists
-    if capabilities['playlists_available']:
-        commands.append("PLAYLISTS")
-    
-    # Queue management
-    commands.extend(["CLEAR_QUEUE", "QUEUE_INFO"])
-    
-    return commands
-
-
-async def _refresh_remote_ui_from_live_data():
-    """Background task: Update remote UI with actual favorite names (doesn't block boot)."""
+async def _initialize_remote_capabilities():
+    """Background task: Initialize full remote capabilities after entities are registered (WiiM pattern)."""
     global _remotes, _coordinator
     
     try:
-        # Let coordinator data fully load
-        await asyncio.sleep(3)
+        # Small delay to ensure entities are fully registered
+        await asyncio.sleep(2)
         
-        _LOG.info("Refreshing remote UI with live coordinator data...")
+        _LOG.info("Initializing full remote capabilities...")
         
-        # Check if we have live favorite data
-        if not _coordinator or not _coordinator.favorites:
-            _LOG.info("No live favorite data available yet, skipping refresh")
-            return
-        
-        # Update favorite names in remote UI
         for remote in _remotes.values():
-            updated = False
-            for page in remote.ui_pages:
-                if page.page_id == "favorites":
-                    for item in page.items:
-                        if hasattr(item, 'cmd') and item.cmd and item.cmd.startswith("FAVORITE_"):
-                            try:
-                                fav_num = int(item.cmd.split("_")[1])
-                                if fav_num in _coordinator.favorites:
-                                    actual_name = _coordinator.favorites[fav_num].name
-                                    if len(actual_name) > 12:
-                                        actual_name = actual_name[:12]
-                                    
-                                    # Update the UI item text
-                                    if hasattr(item, 'text'):
-                                        old_name = item.text
-                                        item.text = actual_name
-                                        if old_name != actual_name:
-                                            _LOG.debug(f"Updated favorite {fav_num}: '{old_name}' -> '{actual_name}'")
-                                            updated = True
-                            except (ValueError, IndexError) as e:
-                                _LOG.warning(f"Error parsing favorite command: {e}")
-            
-            # Push update to Remote if anything changed
-            if updated:
-                await remote.push_update()
+            try:
+                await remote.initialize_capabilities()
+            except Exception as e:
+                _LOG.error(f"Error initializing capabilities for remote {remote.id}: {e}")
         
-        _LOG.info("✓ Remote UI refreshed with live favorite names")
+        _LOG.info("✓ All remote capabilities initialized")
         
     except Exception as e:
-        _LOG.error(f"Error refreshing remote UI: {e}", exc_info=True)
+        _LOG.error(f"Error in capability initialization task: {e}", exc_info=True)
 
 
 async def on_connect() -> None:
@@ -455,7 +250,7 @@ async def main():
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
-    _LOG.info("Starting HEOS integration driver with cache-based approach")
+    _LOG.info("Starting HEOS integration driver with WiiM pattern")
     
     try:
         loop = asyncio.get_running_loop()
@@ -463,7 +258,6 @@ async def main():
         
         _config = HeosConfig(api.config_dir_path)
         
-        # Pre-initialize if already configured (reboot survival)
         if _config.is_configured():
             _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
             loop.create_task(_initialize_entities())
