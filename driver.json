@@ -1,6 +1,6 @@
 {
   "driver_id": "uc-intg-heos",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "min_core_api": "0.21.0",
   "name": {
     "en": "HEOS Integration"
