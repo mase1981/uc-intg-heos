@@ -25,7 +25,19 @@ class HeosRemote(Remote):
         
         entity_id = f"heos_{device_name.lower().replace(' ', '_').replace('-', '_')}_remote"
         
-        # Static attributes - no dynamic detection
+        # Store references FIRST before building UI
+        self._heos_player = heos_player
+        self._api = api
+        self._device_name = device_name
+        self._player_id = heos_player.player_id  # CRITICAL: Set this before building UI
+        self._all_players = all_players
+        self._heos = None
+        
+        # Command throttling
+        self._last_command_time: Dict[str, float] = {}
+        self._command_lock = asyncio.Lock()
+        
+        # Static attributes
         attributes = {
             "state": "available",
             "device_model": heos_player.model,
@@ -33,23 +45,9 @@ class HeosRemote(Remote):
             "last_result": ""
         }
         
-        # Build static UI pages
+        # NOW build UI pages and commands (after _player_id is set)
         ui_pages = self._build_static_ui_pages(device_name, all_players)
-        
-        # Build static commands
         simple_commands = self._build_static_commands(all_players)
-        
-        # Store references
-        self._heos_player = heos_player
-        self._api = api
-        self._device_name = device_name
-        self._player_id = heos_player.player_id
-        self._all_players = all_players
-        self._heos = None  # Will be set by driver
-        
-        # Command throttling
-        self._last_command_time: Dict[str, float] = {}
-        self._command_lock = asyncio.Lock()
         
         super().__init__(
             identifier=entity_id,
@@ -71,16 +69,16 @@ class HeosRemote(Remote):
         """Build static command list - no dynamic detection."""
         commands = []
         
-        # Basic playback - always available
+        # Basic playback
         commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
         
-        # Volume - always available
+        # Volume
         commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
         
-        # Navigation - always available
+        # Navigation
         commands.extend(["NEXT", "PREVIOUS"])
         
-        # Repeat and shuffle - always available
+        # Repeat and shuffle
         commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
         
         # Grouping - only if multiple devices
@@ -91,7 +89,7 @@ class HeosRemote(Remote):
             # Add specific group commands for each other device
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id:
-                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
                     commands.append(f"GROUP_WITH_{safe_name}")
         
         _LOG.info(f"Built {len(commands)} static commands for {self._device_name}")
@@ -101,7 +99,7 @@ class HeosRemote(Remote):
         """Build static UI pages - no dynamic content."""
         pages = []
         
-        # Page 1: Basic Transport Controls (always available)
+        # Page 1: Basic Transport Controls
         page1 = UiPage(
             page_id="transport",
             name="Playback",
@@ -130,7 +128,7 @@ class HeosRemote(Remote):
             row = 1
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id and row < 5:
-                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_')
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
                     display_name = other_player.name[:20]
                     page2.add(create_ui_text(
                         f"+ {display_name}",
@@ -344,7 +342,8 @@ class HeosRemote(Remote):
         try:
             target_player_id = None
             for player_id, player in self._all_players.items():
-                if player.name.upper().replace(' ', '_').replace('-', '_') == target_name:
+                safe_name = player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
+                if safe_name == target_name:
                     target_player_id = player_id
                     break
             
