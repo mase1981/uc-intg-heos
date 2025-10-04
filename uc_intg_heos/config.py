@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 from dataclasses import dataclass, asdict
 
 _LOG = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ class HeosConfig:
         self._config_file = self._config_dir / "heos_config.json"
         self._account_config: Optional[HeosAccountConfig] = None
         self._configured: bool = False
+        self._entity_list: Dict[str, List[str]] = {'media_players': [], 'remotes': []}
         
         # Ensure config directory exists
         self._config_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +57,9 @@ class HeosConfig:
                     self._account_config = HeosAccountConfig(**account_data)
                     self._configured = True
                 
+                # Load entity list for reboot survival
+                self._entity_list = data.get('entity_list', {'media_players': [], 'remotes': []})
+                
                 _LOG.info("Loaded HEOS configuration")
             else:
                 _LOG.info("No existing HEOS configuration found")
@@ -74,6 +78,9 @@ class HeosConfig:
             
             if self._account_config:
                 config_data['heos_account'] = asdict(self._account_config)
+            
+            # Save entity list for reboot survival
+            config_data['entity_list'] = self._entity_list
             
             # Write to file atomically
             temp_file = self._config_file.with_suffix('.tmp')
@@ -138,6 +145,19 @@ class HeosConfig:
             self._account_config.host = new_host
             self._save_config()
     
+    def save_entity_list(self, media_player_ids: List[str], remote_ids: List[str]) -> None:
+        """Save list of entity IDs for reboot survival."""
+        self._entity_list = {
+            'media_players': media_player_ids,
+            'remotes': remote_ids
+        }
+        self._save_config()
+        _LOG.info(f"Saved entity list: {len(media_player_ids)} players, {len(remote_ids)} remotes")
+    
+    def get_entity_list(self) -> Dict[str, List[str]]:
+        """Get saved entity IDs for reboot survival."""
+        return self._entity_list
+    
     def clear_configuration(self) -> bool:
         """
         Clear all configuration.
@@ -147,6 +167,7 @@ class HeosConfig:
         try:
             self._account_config = None
             self._configured = False
+            self._entity_list = {'media_players': [], 'remotes': []}
             
             if self._config_file.exists():
                 self._config_file.unlink()
