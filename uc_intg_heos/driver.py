@@ -53,7 +53,15 @@ async def _initialize_entities():
             _remotes.clear()
             
             _coordinator = HeosCoordinator(api, _config)
+            
+            _LOG.info("Waiting for HEOS coordinator to fully connect and initialize...")
             await _coordinator.async_setup()
+            
+            if not _coordinator.account_data_loaded:
+                _LOG.error("Coordinator setup completed but account data not loaded")
+                raise Exception("Account data not loaded")
+            
+            _LOG.info("HEOS coordinator fully initialized and ready")
             
             players = _coordinator.heos.players
             if not players:
@@ -122,18 +130,55 @@ async def _create_remotes(players: Dict[int, HeosPlayer]):
 
 
 async def on_connect() -> None:
-    global _config, _entities_ready
+    global _config, _entities_ready, _media_players, _remotes
     
-    _LOG.info("UC Remote connected")
+    _LOG.info("UC Remote connected - beginning entity state restoration")
     
-    if not _config:
-        _config = HeosConfig(api.config_dir_path)
-    
-    if _entities_ready:
-        await api.set_device_state(DeviceStates.CONNECTED)
-    else:
-        _LOG.warning("Entities not ready on connect")
+    if not _entities_ready:
+        _LOG.error("Entities not ready on connect")
         await api.set_device_state(DeviceStates.ERROR)
+        return
+    
+    _LOG.info("Forcing entity state updates to restore availability...")
+    
+    max_retries = 3
+    retry_delay = 1.0
+    
+    for attempt in range(max_retries):
+        _LOG.info(f"Entity restoration attempt {attempt + 1}/{max_retries}")
+        
+        restored_media_players = 0
+        restored_remotes = 0
+        
+        for media_player in _media_players.values():
+            try:
+                await media_player.push_update()
+                restored_media_players += 1
+                _LOG.info(f"Restored media player: {media_player.id}")
+            except Exception as e:
+                _LOG.error(f"Failed to restore media player {media_player.id}: {e}")
+        
+        for remote in _remotes.values():
+            try:
+                await remote.push_update()
+                restored_remotes += 1
+                _LOG.info(f"Restored remote: {remote.id}")
+            except Exception as e:
+                _LOG.error(f"Failed to restore remote {remote.id}: {e}")
+        
+        _LOG.info(f"Restoration stats: {restored_media_players}/{len(_media_players)} media players, "
+                 f"{restored_remotes}/{len(_remotes)} remotes")
+        
+        if restored_media_players == len(_media_players) and restored_remotes == len(_remotes):
+            _LOG.info("All entities successfully restored")
+            break
+        
+        if attempt < max_retries - 1:
+            _LOG.warning(f"Not all entities restored, retrying in {retry_delay}s...")
+            await asyncio.sleep(retry_delay)
+    
+    await api.set_device_state(DeviceStates.CONNECTED)
+    _LOG.info("Entity restoration complete, integration connected")
 
 
 async def on_disconnect() -> None:
