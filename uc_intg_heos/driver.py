@@ -34,7 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 
 async def _initialize_entities():
-    """Initialize entities - simplified remote creation."""
+    """Initialize entities with race condition protection - MANDATORY."""
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -49,13 +49,16 @@ async def _initialize_entities():
         _LOG.info("Initializing HEOS entities...")
         
         try:
+            # Clear existing entities
             api.available_entities.clear()
             _media_players.clear()
             _remotes.clear()
             
+            # Create coordinator
             _coordinator = HeosCoordinator(api, _config)
             await _coordinator.async_setup()
             
+            # Get all HEOS players
             players = _coordinator.heos.players
             if not players:
                 _LOG.warning("No HEOS devices found on account")
@@ -83,6 +86,7 @@ async def _initialize_entities():
             else:
                 _LOG.info("Single device - media player only")
             
+            # Mark entities as ready BEFORE setting connected state
             _entities_ready = True
             
             _LOG.info(f"All entities ready: {len(_media_players)} media players, {len(_remotes)} remotes")
@@ -128,15 +132,36 @@ async def _create_static_remotes(players: Dict[int, HeosPlayer]):
 
 
 async def on_connect() -> None:
-    """Handle Remote connection."""
-    global _entities_ready
+    """Handle Remote connection with reboot survival."""
+    global _config, _entities_ready
     
-    _LOG.info("UC Remote connected")
+    _LOG.info("UC Remote connected. Checking configuration state...")
     
-    if _entities_ready:
+    if not _config:
+        _config = HeosConfig(api.config_dir_path)
+    
+    # Reload config from disk (critical for reboot survival)
+    _config.reload_from_disk()
+    
+    # If configured but entities not ready, initialize them now
+    if _config.is_configured() and not _entities_ready:
+        _LOG.info("Configuration found but entities missing, reinitializing...")
+        try:
+            await _initialize_entities()
+        except Exception as e:
+            _LOG.error(f"Failed to reinitialize entities: {e}")
+            await api.set_device_state(DeviceStates.ERROR)
+            return
+    
+    # Set appropriate device state
+    if _config.is_configured() and _entities_ready:
+        _LOG.info("Configuration valid and entities ready - setting CONNECTED state")
         await api.set_device_state(DeviceStates.CONNECTED)
+    elif not _config.is_configured():
+        _LOG.info("No configuration found - setting DISCONNECTED state")
+        await api.set_device_state(DeviceStates.DISCONNECTED)
     else:
-        _LOG.warning("Entities not ready on connect")
+        _LOG.error("Configuration exists but entities failed - setting ERROR state")
         await api.set_device_state(DeviceStates.ERROR)
 
 
@@ -147,19 +172,27 @@ async def on_disconnect() -> None:
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """Handle entity subscriptions."""
+    """Handle entity subscriptions with race condition protection."""
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
+    # Guard against race condition
     if not _entities_ready:
-        _LOG.error("Subscription before entities ready!")
-        return
+        _LOG.error("RACE CONDITION: Subscription before entities ready! Attempting recovery...")
+        if _config and _config.is_configured():
+            await _initialize_entities()
+        else:
+            _LOG.error("Cannot recover - no configuration available")
+            return
     
+    # Check entity objects directly
     for entity_id in entity_ids:
+        # Check media players
         for player_id, media_player in _media_players.items():
             if entity_id == media_player.id:
                 await media_player.push_update()
                 break
         
+        # Check remotes
         for player_id, remote in _remotes.items():
             if entity_id == remote.id:
                 await remote.push_update()
@@ -172,8 +205,8 @@ async def on_unsubscribe_entities(entity_ids: List[str]):
 
 
 async def setup_handler(msg: SetupAction) -> SetupAction:
-    """Handle setup flow."""
-    global _setup_manager
+    """Handle setup flow and create entities."""
+    global _setup_manager, _entities_ready
     
     if not _setup_manager:
         return SetupError()
@@ -188,33 +221,36 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """Main entry point."""
+    """Main entry point with pre-initialization for reboot survival."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
-    _LOG.info("Starting HEOS integration driver")
+    _LOG.info("Starting HEOS integration driver with reboot survival")
     
     try:
         loop = asyncio.get_running_loop()
         api = IntegrationAPI(loop)
         
+        # Initialize config
         _config = HeosConfig(api.config_dir_path)
         
+        # Pre-initialize if already configured (reboot survival)
+        if _config.is_configured():
+            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
+            # Create task to initialize entities BEFORE UC Remote tries to subscribe
+            loop.create_task(_initialize_entities())
+        
+        # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
         api.add_listener(Events.DISCONNECT, on_disconnect)
         api.add_listener(Events.SUBSCRIBE_ENTITIES, on_subscribe_entities)
         api.add_listener(Events.UNSUBSCRIBE_ENTITIES, on_unsubscribe_entities)
         
+        # Initialize setup manager
         _setup_manager = HeosSetupManager(_config)
         
         await api.init("driver.json", setup_handler)
-        
-        if _config.is_configured():
-            _LOG.info("Configuration exists, initializing entities synchronously")
-            await _initialize_entities()
-            await api.set_device_state(DeviceStates.CONNECTED)
-        else:
-            await api.set_device_state(DeviceStates.DISCONNECTED)
+        await api.set_device_state(DeviceStates.DISCONNECTED)
         
         await asyncio.Future()
         
@@ -232,6 +268,7 @@ async def shutdown():
     
     _LOG.info("Shutting down HEOS integration")
     
+    # Shutdown media players
     for player in _media_players.values():
         if hasattr(player, 'shutdown'):
             try:
@@ -239,6 +276,7 @@ async def shutdown():
             except Exception as e:
                 _LOG.error(f"Error shutting down media player: {e}")
     
+    # Shutdown remotes
     for remote in _remotes.values():
         if hasattr(remote, 'shutdown'):
             try:
@@ -246,6 +284,7 @@ async def shutdown():
             except Exception as e:
                 _LOG.error(f"Error shutting down remote: {e}")
     
+    # Shutdown coordinator
     if _coordinator:
         try:
             await _coordinator.async_shutdown()

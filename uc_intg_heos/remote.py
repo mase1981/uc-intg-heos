@@ -23,13 +23,15 @@ class HeosRemote(Remote):
     
     def __init__(self, heos_player: HeosPlayer, device_name: str, api: ucapi.IntegrationAPI, all_players: Dict[int, HeosPlayer]):
         
-        entity_id = f"heos_{device_name.lower().replace(' ', '_').replace('-', '_')}_remote"
+        # CRITICAL FIX: Strip ALL invalid characters from entity ID
+        safe_name = device_name.lower().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
+        entity_id = f"heos_{safe_name}_remote"
         
         # Store references FIRST before building UI
         self._heos_player = heos_player
         self._api = api
         self._device_name = device_name
-        self._player_id = heos_player.player_id  # CRITICAL: Set this before building UI
+        self._player_id = heos_player.player_id
         self._all_players = all_players
         self._heos = None
         
@@ -89,7 +91,7 @@ class HeosRemote(Remote):
             # Add specific group commands for each other device
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id:
-                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                     commands.append(f"GROUP_WITH_{safe_name}")
         
         _LOG.info(f"Built {len(commands)} static commands for {self._device_name}")
@@ -128,7 +130,7 @@ class HeosRemote(Remote):
             row = 1
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id and row < 5:
-                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                     display_name = other_player.name[:20]
                     page2.add(create_ui_text(
                         f"+ {display_name}",
@@ -342,7 +344,7 @@ class HeosRemote(Remote):
         try:
             target_player_id = None
             for player_id, player in self._all_players.items():
-                safe_name = player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
+                safe_name = player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                 if safe_name == target_name:
                     target_player_id = player_id
                     break
