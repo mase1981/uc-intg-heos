@@ -34,6 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 
 async def _initialize_entities():
+    """Initialize entities - simplified remote creation."""
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -53,15 +54,7 @@ async def _initialize_entities():
             _remotes.clear()
             
             _coordinator = HeosCoordinator(api, _config)
-            
-            _LOG.info("Waiting for HEOS coordinator to fully connect and initialize...")
             await _coordinator.async_setup()
-            
-            if not _coordinator.account_data_loaded:
-                _LOG.error("Coordinator setup completed but account data not loaded")
-                raise Exception("Account data not loaded")
-            
-            _LOG.info("HEOS coordinator fully initialized and ready")
             
             players = _coordinator.heos.players
             if not players:
@@ -70,6 +63,7 @@ async def _initialize_entities():
 
             _LOG.info(f"Found {len(players)} HEOS device(s)")
             
+            # Create media players
             for player_id, player in players.items():
                 _LOG.info(f"Creating media player for: {player.name} (ID: {player_id})")
                 
@@ -82,9 +76,10 @@ async def _initialize_entities():
                 
                 _LOG.info(f"Created media player entity: {media_player.id}")
             
+            # Create simplified static remotes
             if len(players) > 1:
-                _LOG.info("Multiple devices - creating remotes")
-                await _create_remotes(players)
+                _LOG.info("Multiple devices - creating static remotes")
+                await _create_static_remotes(players)
             else:
                 _LOG.info("Single device - media player only")
             
@@ -101,92 +96,58 @@ async def _initialize_entities():
             raise
 
 
-async def _create_remotes(players: Dict[int, HeosPlayer]):
+async def _create_static_remotes(players: Dict[int, HeosPlayer]):
+    """Create static remotes - no dynamic capability detection."""
     global _remotes, _coordinator, api
     
     for player_id, player in players.items():
-        _LOG.info(f"Creating remote for: {player.name}")
+        _LOG.info(f"Creating static remote for: {player.name}")
         
         try:
+            # Create static remote - passes all players for grouping
             remote = HeosRemote(
                 heos_player=player,
-                device_name=player.name
+                device_name=player.name,
+                api=api,
+                all_players=players
             )
             
-            remote._api = api
-            remote.set_coordinator(_coordinator, _coordinator.heos, players)
+            # Set HEOS connection
+            remote.set_heos(_coordinator.heos)
             
             await remote.initialize()
-            await remote.initialize_capabilities()
             
             _remotes[player_id] = remote
             api.available_entities.add(remote)
             api.configured_entities.add(remote)
             
-            _LOG.info(f"Created remote for {player.name} with full capabilities")
+            _LOG.info(f"Created static remote for {player.name}")
             
         except Exception as e:
             _LOG.error(f"Failed to create remote for {player.name}: {e}", exc_info=True)
 
 
 async def on_connect() -> None:
-    global _config, _entities_ready, _media_players, _remotes
+    """Handle Remote connection."""
+    global _entities_ready
     
-    _LOG.info("UC Remote connected - beginning entity state restoration")
+    _LOG.info("UC Remote connected")
     
-    if not _entities_ready:
-        _LOG.error("Entities not ready on connect")
+    if _entities_ready:
+        await api.set_device_state(DeviceStates.CONNECTED)
+    else:
+        _LOG.warning("Entities not ready on connect")
         await api.set_device_state(DeviceStates.ERROR)
-        return
-    
-    _LOG.info("Forcing entity state updates to restore availability...")
-    
-    max_retries = 3
-    retry_delay = 1.0
-    
-    for attempt in range(max_retries):
-        _LOG.info(f"Entity restoration attempt {attempt + 1}/{max_retries}")
-        
-        restored_media_players = 0
-        restored_remotes = 0
-        
-        for media_player in _media_players.values():
-            try:
-                await media_player.push_update()
-                restored_media_players += 1
-                _LOG.info(f"Restored media player: {media_player.id}")
-            except Exception as e:
-                _LOG.error(f"Failed to restore media player {media_player.id}: {e}")
-        
-        for remote in _remotes.values():
-            try:
-                await remote.push_update()
-                restored_remotes += 1
-                _LOG.info(f"Restored remote: {remote.id}")
-            except Exception as e:
-                _LOG.error(f"Failed to restore remote {remote.id}: {e}")
-        
-        _LOG.info(f"Restoration stats: {restored_media_players}/{len(_media_players)} media players, "
-                 f"{restored_remotes}/{len(_remotes)} remotes")
-        
-        if restored_media_players == len(_media_players) and restored_remotes == len(_remotes):
-            _LOG.info("All entities successfully restored")
-            break
-        
-        if attempt < max_retries - 1:
-            _LOG.warning(f"Not all entities restored, retrying in {retry_delay}s...")
-            await asyncio.sleep(retry_delay)
-    
-    await api.set_device_state(DeviceStates.CONNECTED)
-    _LOG.info("Entity restoration complete, integration connected")
 
 
 async def on_disconnect() -> None:
+    """Handle Remote disconnection."""
     _LOG.info("UC Remote disconnected")
     await api.set_device_state(DeviceStates.DISCONNECTED)
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
+    """Handle entity subscriptions."""
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
     if not _entities_ready:
@@ -206,10 +167,12 @@ async def on_subscribe_entities(entity_ids: List[str]):
 
 
 async def on_unsubscribe_entities(entity_ids: List[str]):
+    """Handle entity unsubscriptions."""
     _LOG.info(f"Unsubscribed from entities: {entity_ids}")
 
 
 async def setup_handler(msg: SetupAction) -> SetupAction:
+    """Handle setup flow."""
     global _setup_manager
     
     if not _setup_manager:
@@ -225,6 +188,7 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
+    """Main entry point."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
@@ -263,6 +227,7 @@ async def main():
 
 
 async def shutdown():
+    """Shutdown integration cleanly."""
     global _coordinator, _media_players, _remotes
     
     _LOG.info("Shutting down HEOS integration")
