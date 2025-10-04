@@ -34,7 +34,10 @@ _LOG = logging.getLogger(__name__)
 
 
 async def _initialize_entities():
-    """Initialize entities with full HEOS connection."""
+    """
+    CRITICAL: Initialize entities following working pattern from Naim/MusicCast.
+    Only add to available_entities during init, configured_entities added during subscription.
+    """
     global _config, _coordinator, _media_players, _remotes, api, _entities_ready
     
     async with _initialization_lock:
@@ -74,8 +77,10 @@ async def _initialize_entities():
                 await media_player.initialize()
                 
                 _media_players[player_id] = media_player
+                
+                # CRITICAL: Only add to available_entities here
+                # Do NOT add to configured_entities yet - that happens in on_subscribe_entities
                 api.available_entities.add(media_player)
-                api.configured_entities.add(media_player)
                 
                 _LOG.info(f"Created media player entity: {media_player.id}")
             
@@ -85,12 +90,6 @@ async def _initialize_entities():
                 await _create_static_remotes(players)
             else:
                 _LOG.info("Single device detected - media player only (no remote needed)")
-            
-            # Save entity list for reboot survival
-            _config.save_entity_list(
-                media_player_ids=[p.id for p in _media_players.values()],
-                remote_ids=[r.id for r in _remotes.values()]
-            )
             
             # Mark entities as ready
             _entities_ready = True
@@ -126,8 +125,10 @@ async def _create_static_remotes(players: Dict[int, HeosPlayer]):
         
         await remote.initialize()
         _remotes[player_id] = remote
+        
+        # CRITICAL: Only add to available_entities here
+        # Do NOT add to configured_entities yet
         api.available_entities.add(remote)
-        api.configured_entities.add(remote)
         
         _LOG.info(f"Created static remote for {player.name}")
 
@@ -173,7 +174,10 @@ async def on_disconnect() -> None:
 
 
 async def on_subscribe_entities(entity_ids: List[str]):
-    """Handle entity subscriptions with race condition protection."""
+    """
+    CRITICAL FIX: Handle entity subscriptions following Naim/MusicCast pattern.
+    Add to configured_entities HERE during subscription, not during initialization.
+    """
     _LOG.info(f"Entities subscription requested: {entity_ids}")
     
     # Guard against race condition
@@ -185,17 +189,25 @@ async def on_subscribe_entities(entity_ids: List[str]):
             _LOG.error("Cannot recover - no configuration available")
             return
     
-    # Push updates for all subscribed entities
+    # CRITICAL: Add to configured_entities and push updates during subscription
     for entity_id in entity_ids:
         # Check media players
         for player_id, media_player in _media_players.items():
             if entity_id == media_player.id:
+                _LOG.info(f"Media Player subscribed: {entity_id}, adding to configured_entities")
+                # Add to configured entities NOW during subscription
+                api.configured_entities.add(media_player)
+                # Immediate update
                 await media_player.push_update()
                 break
         
         # Check remotes
         for player_id, remote in _remotes.items():
             if entity_id == remote.id:
+                _LOG.info(f"Remote subscribed: {entity_id}, adding to configured_entities")
+                # Add to configured entities NOW during subscription
+                api.configured_entities.add(remote)
+                # Immediate update
                 await remote.push_update()
                 break
 
@@ -222,11 +234,11 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """Main entry point with BLOCKING pre-initialization for reboot survival."""
+    """Main entry point with pre-initialization for reboot survival."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
-    _LOG.info("Starting HEOS integration driver with reboot survival")
+    _LOG.info("Starting HEOS integration driver v1.0.28 with fixed reboot survival")
     
     try:
         loop = asyncio.get_running_loop()
@@ -234,12 +246,11 @@ async def main():
         
         _config = HeosConfig(api.config_dir_path)
         
-        # CRITICAL: BLOCKING initialization if configured
+        # CRITICAL: Pre-initialize if configured (for reboot survival)
         if _config.is_configured():
-            _LOG.info("Found existing configuration, BLOCKING entity initialization for reboot survival")
-            # Call directly instead of create_task - blocks until entities ready
-            await _initialize_entities()
-            _LOG.info(f"Pre-initialization complete - entities ready before WebSocket server starts")
+            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
+            # Use create_task to avoid blocking API initialization
+            loop.create_task(_initialize_entities())
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
@@ -250,7 +261,6 @@ async def main():
         # Initialize setup manager
         _setup_manager = HeosSetupManager(_config)
         
-        # NOW start the API and WebSocket server (entities already exist)
         await api.init("driver.json", setup_handler)
         await api.set_device_state(DeviceStates.DISCONNECTED)
         
