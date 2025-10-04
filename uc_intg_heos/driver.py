@@ -222,7 +222,7 @@ async def setup_handler(msg: SetupAction) -> SetupAction:
 
 
 async def main():
-    """Main entry point with pre-initialization for reboot survival."""
+    """Main entry point with BLOCKING pre-initialization for reboot survival."""
     global api, _config, _setup_manager
     
     logging.basicConfig(level=logging.INFO)
@@ -234,10 +234,12 @@ async def main():
         
         _config = HeosConfig(api.config_dir_path)
         
-        # CRITICAL: Pre-initialize if configured (for reboot survival)
+        # CRITICAL: BLOCKING initialization if configured
         if _config.is_configured():
-            _LOG.info("Found existing configuration, pre-initializing entities for reboot survival")
-            loop.create_task(_initialize_entities())
+            _LOG.info("Found existing configuration, BLOCKING entity initialization for reboot survival")
+            # Call directly instead of create_task - blocks until entities ready
+            await _initialize_entities()
+            _LOG.info(f"Pre-initialization complete - entities ready before WebSocket server starts")
         
         # Register event handlers
         api.add_listener(Events.CONNECT, on_connect)
@@ -248,6 +250,7 @@ async def main():
         # Initialize setup manager
         _setup_manager = HeosSetupManager(_config)
         
+        # NOW start the API and WebSocket server (entities already exist)
         await api.init("driver.json", setup_handler)
         await api.set_device_state(DeviceStates.DISCONNECTED)
         
