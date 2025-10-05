@@ -175,18 +175,16 @@ class HeosMediaPlayer(MediaPlayer):
         """Handle coordinator updates (groups, sources, etc.)."""
         asyncio.create_task(self.push_update())
 
-    async def push_update(self) -> None:
-        """Update entity state and push to UC Remote."""
-        try:
-            await self._update_device_state()
-            
-            if self._api and self._api.configured_entities.contains(self.id):
-                self._api.configured_entities.update_attributes(self.id, self.attributes)
-            
-            _LOG.debug(f"Pushed update for {self.name} - State: {self.attributes[Attributes.STATE]}")
-            
-        except Exception as e:
-            _LOG.error(f"Error during push_update for {self.name}: {e}", exc_info=True)
+    async def update_attributes(self) -> None:
+    """Update entity state and push to Remote."""
+    try:
+        await self._update_device_state()
+        
+        if self._api and self._api.configured_entities.contains(self.id):
+            self._api.configured_entities.update_attributes(self.id, self.attributes)
+        
+    except Exception as e:
+        _LOG.error(f"Error updating {self.name}: {e}")
 
     async def _update_device_state(self) -> None:
         """Update device state from HEOS player."""
