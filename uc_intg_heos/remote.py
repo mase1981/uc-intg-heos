@@ -155,12 +155,20 @@ class HeosRemote(Remote):
         _LOG.info(f"Static HEOS Remote initialized: {self._device_name}")
     
     async def push_update(self) -> None:
-    """Update remote entity state."""
-    try:
-        if self._api and self._api.configured_entities.contains(self.id):
-            self._api.configured_entities.update_attributes(self.id, self.attributes)
-    except Exception as e:
-        _LOG.error(f"Error updating {self._device_name}: {e}")
+        """Update remote entity state."""
+        try:
+            if self._api and self._api.configured_entities.contains(self.id):
+                self._api.configured_entities.update_attributes(self.id, self.attributes)
+        except Exception as e:
+            _LOG.error(f"Error updating {self._device_name}: {e}")
+
+    async def update_attributes(self) -> None:
+        """Update remote entity state."""
+        try:
+            if self._api and self._api.configured_entities.contains(self.id):
+                self._api.configured_entities.update_attributes(self.id, self.attributes)
+        except Exception as e:
+            _LOG.error(f"Error updating {self._device_name}: {e}")
 
     async def _execute_with_retry(self, command_func, command_name: str, max_retries: int = 3) -> bool:
         """Execute a command with retry logic."""
@@ -303,14 +311,7 @@ class HeosRemote(Remote):
                 self.attributes["last_result"] = error_msg
                 await self.push_update()
                 return StatusCodes.SERVER_ERROR
-    async def update_attributes(self) -> None:
-    """Update remote entity state."""
-    try:
-        if self._api and self._api.configured_entities.contains(self.id):
-            self._api.configured_entities.update_attributes(self.id, self.attributes)
-    except Exception as e:
-        _LOG.error(f"Error updating {self._device_name}: {e}")
-        
+
     async def _handle_group_all_speakers(self):
         """Handle creating a group with ALL available speakers."""
         try:
