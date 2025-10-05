@@ -1,5 +1,5 @@
 """
-HEOS Remote entity - Simplified for reboot survival
+HEOS Remote entity - Direct Pattern.
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
@@ -19,27 +19,24 @@ _LOG = logging.getLogger(__name__)
 
 
 class HeosRemote(Remote):
-    """Simplified HEOS Remote with static capabilities for reboot survival."""
+    """HEOS Remote - direct pattern."""
     
-    def __init__(self, heos_player: HeosPlayer, device_name: str, api: ucapi.IntegrationAPI, all_players: Dict[int, HeosPlayer]):
+    def __init__(self, heos: Heos, heos_player: HeosPlayer, device_name: str, 
+                 api: ucapi.IntegrationAPI, all_players: Dict[int, HeosPlayer]):
         
-        # CRITICAL FIX: Strip ALL invalid characters from entity ID
         safe_name = device_name.lower().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
         entity_id = f"heos_{safe_name}_remote"
         
-        # Store references FIRST before building UI
+        self._heos = heos
         self._heos_player = heos_player
         self._api = api
         self._device_name = device_name
         self._player_id = heos_player.player_id
         self._all_players = all_players
-        self._heos = None
         
-        # Command throttling
         self._last_command_time: Dict[str, float] = {}
         self._command_lock = asyncio.Lock()
         
-        # Static attributes
         attributes = {
             "state": "available",
             "device_model": heos_player.model,
@@ -47,7 +44,6 @@ class HeosRemote(Remote):
             "last_result": ""
         }
         
-        # NOW build UI pages and commands (after _player_id is set)
         ui_pages = self._build_static_ui_pages(device_name, all_players)
         simple_commands = self._build_static_commands(all_players)
         
@@ -61,52 +57,33 @@ class HeosRemote(Remote):
             cmd_handler=self.handle_cmd
         )
         
-        _LOG.info(f"Created static HEOS Remote: {device_name} ({entity_id}) with {len(simple_commands)} commands")
-
-    def set_heos(self, heos: Heos):
-        """Set HEOS connection reference."""
-        self._heos = heos
+        _LOG.info(f"Created HEOS Remote: {device_name}")
 
     def _build_static_commands(self, all_players: Dict[int, HeosPlayer]) -> List[str]:
-        """Build static command list - no dynamic detection."""
+        """Build static command list."""
         commands = []
         
-        # Basic playback
         commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
-        
-        # Volume
         commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
-        
-        # Navigation
         commands.extend(["NEXT", "PREVIOUS"])
-        
-        # Repeat and shuffle
         commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
         
-        # Grouping - only if multiple devices
         if len(all_players) > 1:
             commands.append("LEAVE_GROUP")
             commands.append("GROUP_ALL_SPEAKERS")
             
-            # Add specific group commands for each other device
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id:
                     safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                     commands.append(f"GROUP_WITH_{safe_name}")
         
-        _LOG.info(f"Built {len(commands)} static commands for {self._device_name}")
         return commands
 
     def _build_static_ui_pages(self, device_name: str, all_players: Dict[int, HeosPlayer]) -> List[UiPage]:
-        """Build static UI pages - no dynamic content."""
+        """Build static UI pages."""
         pages = []
         
-        # Page 1: Basic Transport Controls
-        page1 = UiPage(
-            page_id="transport",
-            name="Playback",
-            grid=Size(4, 6)
-        )
+        page1 = UiPage(page_id="transport", name="Playback", grid=Size(4, 6))
         page1.add(create_ui_icon("uc:play", 0, 0, cmd="PLAY"))
         page1.add(create_ui_icon("uc:pause", 1, 0, cmd="PAUSE"))
         page1.add(create_ui_icon("uc:stop", 2, 0, cmd="STOP"))
@@ -119,41 +96,29 @@ class HeosRemote(Remote):
         page1.add(create_ui_icon("uc:shuffle", 1, 2, cmd="SHUFFLE_ON"))
         pages.append(page1)
         
-        # Page 2: Grouping (only if multiple devices)
         if len(all_players) > 1:
             page2 = UiPage(page_id="grouping", name="Multi-Room", grid=Size(4, 6))
-            
-            # Group All button
             page2.add(create_ui_text("Group All", 0, 0, Size(4, 1), cmd="GROUP_ALL_SPEAKERS"))
             
-            # Individual device grouping buttons
             row = 1
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id and row < 5:
                     safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                     display_name = other_player.name[:20]
-                    page2.add(create_ui_text(
-                        f"+ {display_name}",
-                        0, row,
-                        Size(4, 1),
-                        cmd=f"GROUP_WITH_{safe_name}"
-                    ))
+                    page2.add(create_ui_text(f"+ {display_name}", 0, row, Size(4, 1), cmd=f"GROUP_WITH_{safe_name}"))
                     row += 1
             
-            # Ungroup button
             if row < 6:
                 page2.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
             
             pages.append(page2)
         
-        _LOG.info(f"Built {len(pages)} static UI pages for {device_name}")
         return pages
 
     async def initialize(self) -> None:
         """Initialize the remote entity."""
         await self.push_update()
-        _LOG.info(f"Static HEOS Remote initialized: {self._device_name}")
-    
+
     async def push_update(self) -> None:
         """Update remote entity state."""
         try:
@@ -197,13 +162,12 @@ class HeosRemote(Remote):
         return False
 
     async def handle_cmd(self, entity, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        """Handle remote commands - static implementation."""
+        """Handle remote commands."""
         async with self._command_lock:
             try:
                 actual_command = params.get("command", cmd_id) if params else cmd_id
-                _LOG.info(f"Executing HEOS Remote command: {actual_command} for {self._device_name}")
+                _LOG.info(f"Remote command: {actual_command} for {self._device_name}")
                 
-                # Throttle commands
                 import time
                 current_time = time.time()
                 last_time = self._last_command_time.get(actual_command, 0)
@@ -216,7 +180,6 @@ class HeosRemote(Remote):
                 self._last_command_time[actual_command] = time.time()
                 self.attributes["last_command"] = actual_command
                 
-                # Basic playback commands
                 if actual_command == "PLAY":
                     await self._heos.player_set_play_state(self._player_id, "play")
                     self.attributes["last_result"] = "Playing"
@@ -235,7 +198,6 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_state(self._player_id, new_state)
                     self.attributes["last_result"] = "Play/Pause toggled"
                     
-                # Volume commands
                 elif actual_command == "VOLUME_UP":
                     await self._heos.player_volume_up(self._player_id, step=5)
                     self.attributes["last_result"] = "Volume increased"
@@ -248,7 +210,6 @@ class HeosRemote(Remote):
                     await self._heos.player_toggle_mute(self._player_id)
                     self.attributes["last_result"] = "Mute toggled"
                     
-                # Navigation commands
                 elif actual_command == "NEXT":
                     await self._heos.player_play_next(self._player_id)
                     self.attributes["last_result"] = "Playing next track"
@@ -257,7 +218,6 @@ class HeosRemote(Remote):
                     await self._heos.player_play_previous(self._player_id)
                     self.attributes["last_result"] = "Playing previous track"
                     
-                # Repeat commands
                 elif actual_command == "REPEAT_OFF":
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.OFF, self._heos_player.shuffle)
                     self.attributes["last_result"] = "Repeat: Off"
@@ -270,7 +230,6 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.ON_ONE, self._heos_player.shuffle)
                     self.attributes["last_result"] = "Repeat: One"
                     
-                # Shuffle commands
                 elif actual_command == "SHUFFLE_ON":
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, True)
                     self.attributes["last_result"] = "Shuffle: On"
@@ -279,11 +238,9 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, False)
                     self.attributes["last_result"] = "Shuffle: Off"
                     
-                # Group All Speakers
                 elif actual_command == "GROUP_ALL_SPEAKERS":
                     await self._handle_group_all_speakers()
                     
-                # Group with specific device
                 elif actual_command.startswith("GROUP_WITH_"):
                     await self._handle_grouping_commands_with_retry(actual_command)
                     
