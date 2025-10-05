@@ -27,12 +27,22 @@ class HeosConfig:
     
     def __init__(self, config_dir: str = None):
         """Initialize configuration."""
-        self._config_dir = Path(config_dir) if config_dir else Path.cwd() / "data"
+        if config_dir:
+            self._config_dir = Path(config_dir)
+        else:
+            # Fallback to current directory if no config_dir provided
+            self._config_dir = Path.cwd()
+        
         self._config_file = self._config_dir / "heos_config.json"
         self._account_config: Optional[HeosAccountConfig] = None
         self._configured: bool = False
         
-        self._config_dir.mkdir(parents=True, exist_ok=True)
+        # Only create directory if it doesn't exist and we have permissions
+        try:
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            _LOG.warning(f"Could not create config directory {self._config_dir}: {e}")
+            # Directory might already exist or be created by UC Remote
     
     def load(self):
         """Load configuration."""
@@ -47,6 +57,8 @@ class HeosConfig:
                     self._configured = True
                 
                 _LOG.info("Configuration loaded")
+            else:
+                _LOG.info("No configuration file found")
                 
         except Exception as e:
             _LOG.error(f"Failed to load configuration: {e}")
@@ -96,6 +108,32 @@ class HeosConfig:
     def get_heos_account(self) -> Optional[HeosAccountConfig]:
         """Get account configuration."""
         return self._account_config
+    
+    def get_host(self) -> str:
+        """Get the current host."""
+        return self._account_config.host if self._account_config else ""
+    
+    def update_host(self, new_host: str) -> None:
+        """Update the host (for failover scenarios)."""
+        if self._account_config:
+            self._account_config.host = new_host
+            self._save()
+    
+    def clear_configuration(self) -> bool:
+        """Clear all configuration."""
+        try:
+            self._account_config = None
+            self._configured = False
+            
+            if self._config_file.exists():
+                self._config_file.unlink()
+            
+            _LOG.info("HEOS configuration cleared")
+            return True
+            
+        except Exception as e:
+            _LOG.error(f"Failed to clear configuration: {e}")
+            return False
     
     def is_configured(self) -> bool:
         """Check if configured."""
