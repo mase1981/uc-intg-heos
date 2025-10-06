@@ -1,17 +1,17 @@
 """
-HEOS Remote entity
+HEOS Remote entity - Direct Pattern.
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import asyncio
 
 import ucapi
 from ucapi import Remote, StatusCodes
-from ucapi.ui import UiPage
+from ucapi.ui import UiPage, Size, create_ui_icon, create_ui_text
 
 from pyheos import Heos, HeosPlayer, HeosError, RepeatType
 
@@ -19,34 +19,33 @@ _LOG = logging.getLogger(__name__)
 
 
 class HeosRemote(Remote):
+    """HEOS Remote - direct pattern."""
     
-    def __init__(self, heos_player: HeosPlayer, device_name: str, api: ucapi.IntegrationAPI, 
-                 capabilities: Dict[str, Any], heos: Heos, ui_pages: List[UiPage], 
-                 simple_commands: List[str]):
+    def __init__(self, heos: Heos, heos_player: HeosPlayer, device_name: str, 
+                 api: ucapi.IntegrationAPI, all_players: Dict[int, HeosPlayer]):
         
-        entity_id = f"heos_{device_name.lower().replace(' ', '_').replace('-', '_')}_remote"
+        safe_name = device_name.lower().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
+        entity_id = f"heos_{safe_name}_remote"
         
-        # Initialize attributes
-        attributes = {
-            "state": "available",
-            "device_model": heos_player.model,
-            "last_command": "",
-            "last_result": "",
-            "connection_status": "connected",
-            "capabilities": capabilities
-        }
-        
-        # Store references
+        self._heos = heos
         self._heos_player = heos_player
         self._api = api
         self._device_name = device_name
         self._player_id = heos_player.player_id
-        self._heos = heos
-        self._capabilities = capabilities
+        self._all_players = all_players
         
-        # Command throttling
         self._last_command_time: Dict[str, float] = {}
         self._command_lock = asyncio.Lock()
+        
+        attributes = {
+            "state": "available",
+            "device_model": heos_player.model,
+            "last_command": "",
+            "last_result": ""
+        }
+        
+        ui_pages = self._build_static_ui_pages(device_name, all_players)
+        simple_commands = self._build_static_commands(all_players)
         
         super().__init__(
             identifier=entity_id,
@@ -58,24 +57,87 @@ class HeosRemote(Remote):
             cmd_handler=self.handle_cmd
         )
         
-        _LOG.info(f"Created HEOS Remote: {device_name} ({entity_id}) with {len(simple_commands)} commands")
+        _LOG.info(f"Created HEOS Remote: {device_name}")
+
+    def _build_static_commands(self, all_players: Dict[int, HeosPlayer]) -> List[str]:
+        """Build static command list."""
+        commands = []
+        
+        commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
+        commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
+        commands.extend(["NEXT", "PREVIOUS"])
+        commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
+        
+        if len(all_players) > 1:
+            commands.append("LEAVE_GROUP")
+            commands.append("GROUP_ALL_SPEAKERS")
+            
+            for other_player_id, other_player in all_players.items():
+                if other_player_id != self._player_id:
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
+                    commands.append(f"GROUP_WITH_{safe_name}")
+        
+        return commands
+
+    def _build_static_ui_pages(self, device_name: str, all_players: Dict[int, HeosPlayer]) -> List[UiPage]:
+        """Build static UI pages."""
+        pages = []
+        
+        page1 = UiPage(page_id="transport", name="Playback", grid=Size(4, 6))
+        page1.add(create_ui_icon("uc:play", 0, 0, cmd="PLAY"))
+        page1.add(create_ui_icon("uc:pause", 1, 0, cmd="PAUSE"))
+        page1.add(create_ui_icon("uc:stop", 2, 0, cmd="STOP"))
+        page1.add(create_ui_icon("uc:skip-forward", 3, 0, cmd="NEXT"))
+        page1.add(create_ui_icon("uc:skip-backward", 0, 1, cmd="PREVIOUS"))
+        page1.add(create_ui_icon("uc:volume-up", 1, 1, cmd="VOLUME_UP"))
+        page1.add(create_ui_icon("uc:volume-down", 2, 1, cmd="VOLUME_DOWN"))
+        page1.add(create_ui_icon("uc:mute", 3, 1, cmd="MUTE_TOGGLE"))
+        page1.add(create_ui_icon("uc:repeat", 0, 2, cmd="REPEAT_ALL"))
+        page1.add(create_ui_icon("uc:shuffle", 1, 2, cmd="SHUFFLE_ON"))
+        pages.append(page1)
+        
+        if len(all_players) > 1:
+            page2 = UiPage(page_id="grouping", name="Multi-Room", grid=Size(4, 6))
+            page2.add(create_ui_text("Group All", 0, 0, Size(4, 1), cmd="GROUP_ALL_SPEAKERS"))
+            
+            row = 1
+            for other_player_id, other_player in all_players.items():
+                if other_player_id != self._player_id and row < 5:
+                    safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
+                    display_name = other_player.name[:20]
+                    page2.add(create_ui_text(f"+ {display_name}", 0, row, Size(4, 1), cmd=f"GROUP_WITH_{safe_name}"))
+                    row += 1
+            
+            if row < 6:
+                page2.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
+            
+            pages.append(page2)
+        
+        return pages
 
     async def initialize(self) -> None:
         """Initialize the remote entity."""
         await self.push_update()
-        _LOG.info(f"HEOS Remote initialized: {self._device_name}")
-    
+
     async def push_update(self) -> None:
         """Update remote entity state."""
         try:
             if self._api and self._api.configured_entities.contains(self.id):
                 self._api.configured_entities.update_attributes(self.id, self.attributes)
         except Exception as e:
-            _LOG.error(f"Error in remote push_update for {self._device_name}: {e}")
+            _LOG.error(f"Error updating {self._device_name}: {e}")
+
+    async def update_attributes(self) -> None:
+        """Update remote entity state."""
+        try:
+            if self._api and self._api.configured_entities.contains(self.id):
+                self._api.configured_entities.update_attributes(self.id, self.attributes)
+        except Exception as e:
+            _LOG.error(f"Error updating {self._device_name}: {e}")
 
     async def _execute_with_retry(self, command_func, command_name: str, max_retries: int = 3) -> bool:
-        """Execute a command with retry logic for 'Processing previous command' errors."""
-        retry_delays = [1.0, 2.0, 3.0]  # Exponential backoff delays
+        """Execute a command with retry logic."""
+        retry_delays = [1.0, 2.0, 3.0]
         
         for attempt in range(max_retries):
             try:
@@ -84,45 +146,40 @@ class HeosRemote(Remote):
             except HeosError as e:
                 error_msg = str(e)
                 
-                # Check if it's error code 13 (Processing previous command)
                 if "Processing previous command (13)" in error_msg:
                     if attempt < max_retries - 1:
                         delay = retry_delays[attempt]
-                        _LOG.warning(f"Command {command_name} failed (processing previous command), retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                        _LOG.warning(f"Command {command_name} failed (processing previous), retrying in {delay}s")
                         await asyncio.sleep(delay)
                         continue
                     else:
                         _LOG.error(f"Command {command_name} failed after {max_retries} attempts: {e}")
                         raise
                 else:
-                    # For other errors, don't retry
                     _LOG.error(f"Command {command_name} failed: {e}")
                     raise
         
         return False
 
     async def handle_cmd(self, entity, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        """Handle remote commands using detected capabilities with throttling."""
+        """Handle remote commands."""
         async with self._command_lock:
             try:
                 actual_command = params.get("command", cmd_id) if params else cmd_id
-                _LOG.info(f"Executing HEOS Remote command: {actual_command} for {self._device_name}")
+                _LOG.info(f"Remote command: {actual_command} for {self._device_name}")
                 
-                # Throttle commands - minimum 500ms between commands
                 import time
                 current_time = time.time()
                 last_time = self._last_command_time.get(actual_command, 0)
                 time_diff = current_time - last_time
                 
-                if time_diff < 0.5:  # 500ms throttle
+                if time_diff < 0.5:
                     wait_time = 0.5 - time_diff
-                    _LOG.debug(f"Throttling command {actual_command}, waiting {wait_time:.2f}s")
                     await asyncio.sleep(wait_time)
                 
                 self._last_command_time[actual_command] = time.time()
                 self.attributes["last_command"] = actual_command
                 
-                # Basic playback commands
                 if actual_command == "PLAY":
                     await self._heos.player_set_play_state(self._player_id, "play")
                     self.attributes["last_result"] = "Playing"
@@ -136,13 +193,11 @@ class HeosRemote(Remote):
                     self.attributes["last_result"] = "Stopped"
                     
                 elif actual_command == "PLAY_PAUSE":
-                    # Toggle play/pause
                     current_state = self._heos_player.state
                     new_state = "pause" if str(current_state) == "PlayState.PLAY" else "play"
                     await self._heos.player_set_play_state(self._player_id, new_state)
                     self.attributes["last_result"] = "Play/Pause toggled"
                     
-                # Volume commands
                 elif actual_command == "VOLUME_UP":
                     await self._heos.player_volume_up(self._player_id, step=5)
                     self.attributes["last_result"] = "Volume increased"
@@ -155,7 +210,6 @@ class HeosRemote(Remote):
                     await self._heos.player_toggle_mute(self._player_id)
                     self.attributes["last_result"] = "Mute toggled"
                     
-                # Navigation commands
                 elif actual_command == "NEXT":
                     await self._heos.player_play_next(self._player_id)
                     self.attributes["last_result"] = "Playing next track"
@@ -164,7 +218,6 @@ class HeosRemote(Remote):
                     await self._heos.player_play_previous(self._player_id)
                     self.attributes["last_result"] = "Playing previous track"
                     
-                # Repeat commands
                 elif actual_command == "REPEAT_OFF":
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.OFF, self._heos_player.shuffle)
                     self.attributes["last_result"] = "Repeat: Off"
@@ -177,7 +230,6 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_mode(self._player_id, RepeatType.ON_ONE, self._heos_player.shuffle)
                     self.attributes["last_result"] = "Repeat: One"
                     
-                # Shuffle commands
                 elif actual_command == "SHUFFLE_ON":
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, True)
                     self.attributes["last_result"] = "Shuffle: On"
@@ -186,39 +238,20 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, False)
                     self.attributes["last_result"] = "Shuffle: Off"
                     
-                # Input source commands
-                elif actual_command.startswith("INPUT_"):
-                    await self._handle_input_commands(actual_command)
+                elif actual_command == "GROUP_ALL_SPEAKERS":
+                    await self._handle_group_all_speakers()
                     
-                # Group management
                 elif actual_command.startswith("GROUP_WITH_"):
                     await self._handle_grouping_commands_with_retry(actual_command)
                     
                 elif actual_command == "LEAVE_GROUP":
                     await self._handle_ungroup_command_with_retry()
                     
-                # Favorites
-                elif actual_command.startswith("FAVORITE_"):
-                    await self._handle_favorite_command(actual_command)
-                    
-                # Music services
-                elif actual_command.startswith("SERVICE_"):
-                    await self._handle_service_command(actual_command)
-                    
-                # Queue management
-                elif actual_command == "CLEAR_QUEUE":
-                    await self._heos.player_clear_queue(self._player_id)
-                    self.attributes["last_result"] = "Queue cleared"
-                    
-                elif actual_command == "QUEUE_INFO":
-                    self.attributes["last_result"] = "Queue info displayed"
-                    
                 else:
                     _LOG.warning(f"Unsupported remote command: {actual_command}")
                     self.attributes["last_result"] = f"Command {actual_command} not recognized"
                     return StatusCodes.NOT_IMPLEMENTED
 
-                # Update the entity state
                 await self.push_update()
                 return StatusCodes.OK
                 
@@ -236,54 +269,67 @@ class HeosRemote(Remote):
                 await self.push_update()
                 return StatusCodes.SERVER_ERROR
 
-    async def _handle_input_commands(self, command: str):
-        """Handle input source commands."""
-        # Extract input name from command (e.g., "INPUT_AUX_IN_1" -> "inputs/aux_in_1")
-        input_name = command[len("INPUT_"):].lower()
-        heos_input = f"inputs/{input_name}"
-        
+    async def _handle_group_all_speakers(self):
+        """Handle creating a group with ALL available speakers."""
         try:
-            await self._heos.play_input_source(self._player_id, heos_input)
-            display_name = input_name.replace('_', ' ').title()
-            self.attributes["last_result"] = f"Switched to {display_name}"
+            all_players = self._all_players
+            
+            if not all_players or len(all_players) <= 1:
+                self.attributes["last_result"] = "No other speakers available"
+                return
+            
+            player_ids = [self._player_id]
+            speaker_names = [self._device_name]
+            
+            for player_id, player in all_players.items():
+                if player_id != self._player_id:
+                    player_ids.append(player_id)
+                    speaker_names.append(player.name)
+            
+            _LOG.info(f"Creating all-speakers group with {len(player_ids)} devices")
+            
+            async def group_all_command():
+                await self._heos.set_group(player_ids)
+            
+            success = await self._execute_with_retry(group_all_command, "GROUP_ALL_SPEAKERS")
+            
+            if success:
+                self.attributes["last_result"] = f"Grouped {len(player_ids)} speakers"
+            else:
+                self.attributes["last_result"] = "Failed to group all speakers"
+                
         except Exception as e:
-            _LOG.error(f"Error playing input {input_name}: {e}")
-            self.attributes["last_result"] = f"Failed to switch to {input_name}"
+            _LOG.error(f"Error creating all-speakers group: {e}")
+            self.attributes["last_result"] = "Failed to group all speakers"
 
     async def _handle_grouping_commands_with_retry(self, command: str):
         """Handle group management commands with retry logic."""
-        # Extract target player name from command
         target_name = command[len("GROUP_WITH_"):]
         
         try:
-            # Find target player
             target_player_id = None
-            for player_id, player in self._heos.players.items():
-                if player.name.upper().replace(' ', '_').replace('-', '_') == target_name:
+            for player_id, player in self._all_players.items():
+                safe_name = player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
+                if safe_name == target_name:
                     target_player_id = player_id
                     break
             
             if target_player_id:
-                # Create group with retry logic
                 async def group_command():
                     await self._heos.set_group([self._player_id, target_player_id])
                 
-                success = await self._execute_with_retry(
-                    group_command,
-                    f"GROUP_WITH_{target_name}"
-                )
+                success = await self._execute_with_retry(group_command, f"GROUP_WITH_{target_name}")
                 
                 if success:
-                    display_name = target_name.replace('_', ' ').title()
-                    self.attributes["last_result"] = f"Grouped with {display_name}"
+                    self.attributes["last_result"] = f"Grouped with {target_name.replace('_', ' ').title()}"
                 else:
-                    self.attributes["last_result"] = f"Failed to group after retries"
+                    self.attributes["last_result"] = "Failed to group"
             else:
-                self.attributes["last_result"] = f"Could not find device: {target_name}"
+                self.attributes["last_result"] = f"Device not found: {target_name}"
                 
         except Exception as e:
             _LOG.error(f"Error grouping with {target_name}: {e}")
-            self.attributes["last_result"] = f"Failed to group with {target_name}"
+            self.attributes["last_result"] = "Failed to group"
 
     async def _handle_ungroup_command_with_retry(self):
         """Handle ungrouping player with retry logic."""
@@ -291,51 +337,16 @@ class HeosRemote(Remote):
             async def ungroup_command():
                 await self._heos.set_group([self._player_id])
             
-            success = await self._execute_with_retry(
-                ungroup_command,
-                "LEAVE_GROUP"
-            )
+            success = await self._execute_with_retry(ungroup_command, "LEAVE_GROUP")
             
             if success:
                 self.attributes["last_result"] = "Left group"
             else:
-                self.attributes["last_result"] = "Failed to leave group after retries"
+                self.attributes["last_result"] = "Failed to leave group"
                 
         except Exception as e:
             _LOG.error(f"Error leaving group: {e}")
             self.attributes["last_result"] = "Failed to leave group"
-
-    async def _handle_grouping_commands(self, command: str):
-        await self._handle_grouping_commands_with_retry(command)
-
-    async def _handle_ungroup_command(self):
-        await self._handle_ungroup_command_with_retry()
-
-    async def _handle_favorite_command(self, command: str):
-        """Handle favorite playback commands."""
-        try:
-            # Extract favorite number
-            favorite_num = int(command.split("_")[-1])
-            await self._heos.play_preset_station(self._player_id, favorite_num)
-            self.attributes["last_result"] = f"Playing favorite {favorite_num}"
-        except Exception as e:
-            _LOG.error(f"Error playing favorite: {e}")
-            self.attributes["last_result"] = "Failed to play favorite"
-
-    async def _handle_service_command(self, command: str):
-        """Handle music service commands."""
-        try:
-            # Extract service name from command
-            service_name = command[len("SERVICE_"):].replace('_', ' ')
-            
-            # This would typically trigger the media player's source selection
-            # For now, just acknowledge
-            self.attributes["last_result"] = f"Switched to {service_name}"
-            _LOG.info(f"Service command: {service_name} - use media player for actual playback")
-            
-        except Exception as e:
-            _LOG.error(f"Error handling service command: {e}")
-            self.attributes["last_result"] = "Failed to switch service"
 
     async def shutdown(self):
         """Shutdown the remote entity."""
