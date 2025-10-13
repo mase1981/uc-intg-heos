@@ -19,7 +19,6 @@ _LOG = logging.getLogger(__name__)
 
 
 class HeosRemote(Remote):
-    """HEOS Remote - direct pattern."""
     
     def __init__(self, heos: Heos, heos_player: HeosPlayer, device_name: str, 
                  api: ucapi.IntegrationAPI, all_players: Dict[int, HeosPlayer]):
@@ -36,6 +35,7 @@ class HeosRemote(Remote):
         
         self._last_command_time: Dict[str, float] = {}
         self._command_lock = asyncio.Lock()
+        self._inputs = []
         
         attributes = {
             "state": "available",
@@ -58,15 +58,28 @@ class HeosRemote(Remote):
         )
         
         _LOG.info(f"Created HEOS Remote: {device_name}")
+        
+        asyncio.create_task(self._load_inputs())
+
+    async def _load_inputs(self):
+        try:
+            self._inputs = await self._heos.get_input_sources()
+            _LOG.info(f"Loaded {len(self._inputs)} input sources for remote")
+        except Exception as e:
+            _LOG.error(f"Failed to load inputs: {e}")
 
     def _build_static_commands(self, all_players: Dict[int, HeosPlayer]) -> List[str]:
-        """Build static command list."""
         commands = []
         
         commands.extend(["PLAY", "PAUSE", "STOP", "PLAY_PAUSE"])
         commands.extend(["VOLUME_UP", "VOLUME_DOWN", "MUTE_TOGGLE"])
         commands.extend(["NEXT", "PREVIOUS"])
         commands.extend(["REPEAT_OFF", "REPEAT_ALL", "REPEAT_ONE", "SHUFFLE_ON", "SHUFFLE_OFF"])
+        
+        commands.extend([
+            "INPUT_HDMI_ARC", "INPUT_HDMI_1", "INPUT_HDMI_2", "INPUT_HDMI_3", "INPUT_HDMI_4",
+            "INPUT_OPTICAL", "INPUT_COAXIAL", "INPUT_AUX", "INPUT_BLUETOOTH"
+        ])
         
         if len(all_players) > 1:
             commands.append("LEAVE_GROUP")
@@ -80,7 +93,6 @@ class HeosRemote(Remote):
         return commands
 
     def _build_static_ui_pages(self, device_name: str, all_players: Dict[int, HeosPlayer]) -> List[UiPage]:
-        """Build static UI pages."""
         pages = []
         
         page1 = UiPage(page_id="transport", name="Playback", grid=Size(4, 6))
@@ -96,31 +108,40 @@ class HeosRemote(Remote):
         page1.add(create_ui_icon("uc:shuffle", 1, 2, cmd="SHUFFLE_ON"))
         pages.append(page1)
         
+        page2 = UiPage(page_id="inputs", name="Inputs", grid=Size(4, 6))
+        page2.add(create_ui_text("HDMI ARC", 0, 0, Size(2, 1), cmd="INPUT_HDMI_ARC"))
+        page2.add(create_ui_text("HDMI 1", 2, 0, Size(2, 1), cmd="INPUT_HDMI_1"))
+        page2.add(create_ui_text("HDMI 2", 0, 1, Size(2, 1), cmd="INPUT_HDMI_2"))
+        page2.add(create_ui_text("HDMI 3", 2, 1, Size(2, 1), cmd="INPUT_HDMI_3"))
+        page2.add(create_ui_text("HDMI 4", 0, 2, Size(2, 1), cmd="INPUT_HDMI_4"))
+        page2.add(create_ui_text("Optical", 2, 2, Size(2, 1), cmd="INPUT_OPTICAL"))
+        page2.add(create_ui_text("Coaxial", 0, 3, Size(2, 1), cmd="INPUT_COAXIAL"))
+        page2.add(create_ui_text("AUX", 2, 3, Size(2, 1), cmd="INPUT_AUX"))
+        pages.append(page2)
+        
         if len(all_players) > 1:
-            page2 = UiPage(page_id="grouping", name="Multi-Room", grid=Size(4, 6))
-            page2.add(create_ui_text("Group All", 0, 0, Size(4, 1), cmd="GROUP_ALL_SPEAKERS"))
+            page3 = UiPage(page_id="grouping", name="Multi-Room", grid=Size(4, 6))
+            page3.add(create_ui_text("Group All", 0, 0, Size(4, 1), cmd="GROUP_ALL_SPEAKERS"))
             
             row = 1
             for other_player_id, other_player in all_players.items():
                 if other_player_id != self._player_id and row < 5:
                     safe_name = other_player.name.upper().replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '').replace('[', '').replace(']', '').replace('.', '')
                     display_name = other_player.name[:20]
-                    page2.add(create_ui_text(f"+ {display_name}", 0, row, Size(4, 1), cmd=f"GROUP_WITH_{safe_name}"))
+                    page3.add(create_ui_text(f"+ {display_name}", 0, row, Size(4, 1), cmd=f"GROUP_WITH_{safe_name}"))
                     row += 1
             
             if row < 6:
-                page2.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
+                page3.add(create_ui_text("Ungroup", 0, row, Size(4, 1), cmd="LEAVE_GROUP"))
             
-            pages.append(page2)
+            pages.append(page3)
         
         return pages
 
     async def initialize(self) -> None:
-        """Initialize the remote entity."""
         await self.push_update()
 
     async def push_update(self) -> None:
-        """Update remote entity state."""
         try:
             if self._api and self._api.configured_entities.contains(self.id):
                 self._api.configured_entities.update_attributes(self.id, self.attributes)
@@ -128,7 +149,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error updating {self._device_name}: {e}")
 
     async def update_attributes(self) -> None:
-        """Update remote entity state."""
         try:
             if self._api and self._api.configured_entities.contains(self.id):
                 self._api.configured_entities.update_attributes(self.id, self.attributes)
@@ -136,7 +156,6 @@ class HeosRemote(Remote):
             _LOG.error(f"Error updating {self._device_name}: {e}")
 
     async def _execute_with_retry(self, command_func, command_name: str, max_retries: int = 3) -> bool:
-        """Execute a command with retry logic."""
         retry_delays = [1.0, 2.0, 3.0]
         
         for attempt in range(max_retries):
@@ -162,7 +181,6 @@ class HeosRemote(Remote):
         return False
 
     async def handle_cmd(self, entity, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        """Handle remote commands."""
         async with self._command_lock:
             try:
                 actual_command = params.get("command", cmd_id) if params else cmd_id
@@ -238,6 +256,9 @@ class HeosRemote(Remote):
                     await self._heos.player_set_play_mode(self._player_id, self._heos_player.repeat, False)
                     self.attributes["last_result"] = "Shuffle: Off"
                     
+                elif actual_command.startswith("INPUT_"):
+                    await self._handle_input_command(actual_command)
+                    
                 elif actual_command == "GROUP_ALL_SPEAKERS":
                     await self._handle_group_all_speakers()
                     
@@ -269,8 +290,32 @@ class HeosRemote(Remote):
                 await self.push_update()
                 return StatusCodes.SERVER_ERROR
 
+    async def _handle_input_command(self, command: str):
+        input_map = {
+            "INPUT_HDMI_ARC": "inputs/hdmi_arc_1",
+            "INPUT_HDMI_1": "inputs/hdmi_in_1",
+            "INPUT_HDMI_2": "inputs/hdmi_in_2",
+            "INPUT_HDMI_3": "inputs/hdmi_in_3",
+            "INPUT_HDMI_4": "inputs/hdmi_in_4",
+            "INPUT_OPTICAL": "inputs/optical_in_1",
+            "INPUT_COAXIAL": "inputs/coax_in_1",
+            "INPUT_AUX": "inputs/aux_in_1",
+            "INPUT_BLUETOOTH": "inputs/bluetooth"
+        }
+        
+        input_name = input_map.get(command)
+        if input_name:
+            try:
+                await self._heos.play_input_source(
+                    player_id=self._player_id,
+                    input_name=input_name
+                )
+                self.attributes["last_result"] = f"Switched to {command.replace('INPUT_', '').replace('_', ' ')}"
+            except Exception as e:
+                _LOG.error(f"Failed to switch to input {command}: {e}")
+                self.attributes["last_result"] = f"Failed to switch input"
+
     async def _handle_group_all_speakers(self):
-        """Handle creating a group with ALL available speakers."""
         try:
             all_players = self._all_players
             
@@ -303,7 +348,6 @@ class HeosRemote(Remote):
             self.attributes["last_result"] = "Failed to group all speakers"
 
     async def _handle_grouping_commands_with_retry(self, command: str):
-        """Handle group management commands with retry logic."""
         target_name = command[len("GROUP_WITH_"):]
         
         try:
@@ -332,7 +376,6 @@ class HeosRemote(Remote):
             self.attributes["last_result"] = "Failed to group"
 
     async def _handle_ungroup_command_with_retry(self):
-        """Handle ungrouping player with retry logic."""
         try:
             async def ungroup_command():
                 await self._heos.set_group([self._player_id])
@@ -349,5 +392,4 @@ class HeosRemote(Remote):
             self.attributes["last_result"] = "Failed to leave group"
 
     async def shutdown(self):
-        """Shutdown the remote entity."""
         _LOG.info(f"Shutting down HEOS Remote: {self._device_name}")
