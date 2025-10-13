@@ -35,10 +35,8 @@ HA_HEOS_REPEAT_TYPE_MAP = {v: k for k, v in HEOS_HA_REPEAT_TYPE_MAP.items()}
 
 
 class HeosMediaPlayer(MediaPlayer):
-    """HEOS Media Player - direct connection pattern."""
 
     def __init__(self, heos: Heos, player: HeosPlayer, api: ucapi.IntegrationAPI):
-        """Initialize the HEOS media player."""
         entity_id = f"heos_{player.name.lower().replace(' ', '_').replace('-', '_')}"
         
         features = [
@@ -85,11 +83,12 @@ class HeosMediaPlayer(MediaPlayer):
         self._player_id = player.player_id
         self._api = api
         
-        # Lazy-loaded account data
         self._favorites = {}
         self._favorites_loaded = False
         self._sources = {}
         self._sources_loaded = False
+        self._inputs = []
+        self._inputs_loaded = False
         self._source_list = []
         
         model_parts = player.model.split(maxsplit=1)
@@ -108,17 +107,12 @@ class HeosMediaPlayer(MediaPlayer):
         _LOG.info(f"Created HEOS Media Player: {player.name}")
 
     async def initialize(self) -> None:
-        """Initialize the media player."""
         self._player.add_on_player_event(self._on_player_event)
-        
-        # Load account data in background (doesn't block entity creation)
         asyncio.create_task(self._load_account_data())
-        
         await self.push_update()
         _LOG.debug(f"Media Player initialized: {self.name}")
 
     async def _load_account_data(self):
-        """Load account data asynchronously (non-blocking)."""
         try:
             if self._heos.is_signed_in and not self._favorites_loaded:
                 self._favorites = await self._heos.get_favorites()
@@ -130,13 +124,19 @@ class HeosMediaPlayer(MediaPlayer):
                 self._sources_loaded = True
                 _LOG.debug(f"Loaded {len(self._sources)} music sources")
             
-            # Build source list
+            if not self._inputs_loaded:
+                self._inputs = await self._heos.get_input_sources()
+                self._inputs_loaded = True
+                _LOG.debug(f"Loaded {len(self._inputs)} input sources")
+            
             self._source_list = []
             for fav in self._favorites.values():
                 self._source_list.append(fav.name)
             for source in self._sources.values():
                 if source.available:
                     self._source_list.append(source.name)
+            for input_source in self._inputs:
+                self._source_list.append(input_source.name)
             
             self.attributes[Attributes.SOURCE_LIST] = self._source_list
             await self.push_update()
@@ -145,11 +145,9 @@ class HeosMediaPlayer(MediaPlayer):
             _LOG.error(f"Error loading account data: {e}")
 
     async def _on_player_event(self, event: str) -> None:
-        """Handle player events."""
         await self.push_update()
 
     async def push_update(self) -> None:
-        """Update entity state."""
         try:
             await self._update_device_state()
             
@@ -160,7 +158,6 @@ class HeosMediaPlayer(MediaPlayer):
             _LOG.error(f"Error updating {self.name}: {e}")
 
     async def update_attributes(self) -> None:
-        """Update entity attributes."""
         try:
             await self._update_device_state()
             
@@ -171,7 +168,6 @@ class HeosMediaPlayer(MediaPlayer):
             _LOG.error(f"Error updating {self.name}: {e}")
 
     async def _update_device_state(self) -> None:
-        """Update device state from HEOS player."""
         try:
             await self._player.refresh()
             
@@ -194,6 +190,16 @@ class HeosMediaPlayer(MediaPlayer):
                 self.attributes[Attributes.MEDIA_POSITION] = (
                     int(now_playing.current_position / 1000) if now_playing.current_position else 0
                 )
+                
+                current_source = None
+                if now_playing.source_id == heos_const.MUSIC_SOURCE_AUX_INPUT:
+                    for input_source in self._inputs:
+                        if input_source.media_id == now_playing.media_id:
+                            current_source = input_source.name
+                            break
+                
+                if current_source:
+                    self.attributes[Attributes.SOURCE] = current_source
             
             self.attributes[Attributes.REPEAT] = HEOS_HA_REPEAT_TYPE_MAP.get(
                 self._player.repeat, RepeatMode.OFF
@@ -208,7 +214,6 @@ class HeosMediaPlayer(MediaPlayer):
             self.attributes[Attributes.STATE] = States.UNAVAILABLE
 
     async def _command_handler(self, entity: MediaPlayer, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        """Handle media player commands."""
         try:
             params = params or {}
             _LOG.info(f"Command: {cmd_id} for {self.name}")
@@ -283,26 +288,30 @@ class HeosMediaPlayer(MediaPlayer):
             return StatusCodes.SERVER_ERROR
 
     async def _handle_select_source(self, source_name: str) -> None:
-        """Handle source selection."""
         _LOG.info(f"Selecting source: {source_name}")
         
         try:
-            # Ensure account data is loaded
-            if not self._favorites_loaded or not self._sources_loaded:
+            if not self._favorites_loaded or not self._sources_loaded or not self._inputs_loaded:
                 await self._load_account_data()
             
-            # Try favorites
             for index, favorite in self._favorites.items():
                 if favorite.name == source_name:
                     _LOG.info(f"Playing favorite: {source_name}")
                     await self._player.play_preset_station(index)
                     return
             
-            # Try music sources
             for source_id, source in self._sources.items():
                 if source.name == source_name and source.available:
                     _LOG.info(f"Playing source: {source_name}")
-                    # Simple play - no complex browsing
+                    return
+            
+            for input_source in self._inputs:
+                if input_source.name == source_name:
+                    _LOG.info(f"Playing input: {source_name}")
+                    await self._heos.play_input_source(
+                        player_id=self._player_id,
+                        input_name=input_source.media_id
+                    )
                     return
             
             raise HeosError(f"Source not found: {source_name}")
