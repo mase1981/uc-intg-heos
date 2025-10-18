@@ -111,6 +111,9 @@ class HeosMediaPlayer(MediaPlayer):
         player.add_on_player_event(self._on_player_event)
         asyncio.create_task(self._load_account_data())
 
+    async def initialize(self) -> None:
+        await self.push_update()
+
     async def _load_account_data(self) -> None:
         try:
             if not self._sources_loaded:
