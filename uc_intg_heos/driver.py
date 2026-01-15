@@ -334,7 +334,7 @@ async def main():
     """Main entry point."""
     global api, config, setup_manager, reconnect_task
 
-    _LOG.info("Starting HEOS Integration v1.1.1")
+    _LOG.info("Starting HEOS Integration v1.1.3")
 
     try:
         loop = asyncio.get_running_loop()
