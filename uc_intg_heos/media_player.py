@@ -1,5 +1,5 @@
 """
-HEOS Media Player Entity - Direct Pattern.
+HEOS Media Player entity.
 
 :copyright: (c) 2025 by Meir Miyara.
 :license: MPL-2.0, see LICENSE for more details.
@@ -7,18 +7,35 @@ HEOS Media Player Entity - Direct Pattern.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
-from datetime import datetime
+from typing import Any
 
-import ucapi
-from ucapi import MediaPlayer, StatusCodes
-from ucapi.media_player import Attributes, DeviceClasses, Features, States, RepeatMode, Commands
+from ucapi import media_player, StatusCodes
+from ucapi.media_player import (
+    Attributes,
+    BrowseMediaItem,
+    BrowseOptions,
+    BrowseResults,
+    Commands,
+    DeviceClasses,
+    Features,
+    MediaClass,
+    MediaContentType,
+    RepeatMode,
+    States,
+)
+from ucapi.api_definitions import Pagination
 
-from pyheos import Heos, HeosError, HeosPlayer, AddCriteriaType, PlayState, RepeatType, const as heos_const
+from pyheos import HeosError, HeosPlayer
+from pyheos.types import PlayState, RepeatType
+
+from ucapi_framework import MediaPlayerEntity
+
+from uc_intg_heos.config import HeosDeviceConfig
+from uc_intg_heos.device import HeosDevice
 
 _LOG = logging.getLogger(__name__)
 
-PLAY_STATE_TO_STATE = {
+PLAY_STATE_MAP = {
     None: States.STANDBY,
     PlayState.UNKNOWN: States.STANDBY,
     PlayState.PLAY: States.PLAYING,
@@ -26,326 +43,294 @@ PLAY_STATE_TO_STATE = {
     PlayState.PAUSE: States.PAUSED,
 }
 
-HEOS_HA_REPEAT_TYPE_MAP = {
+HEOS_REPEAT_MAP = {
     RepeatType.OFF: RepeatMode.OFF,
     RepeatType.ON_ALL: RepeatMode.ALL,
     RepeatType.ON_ONE: RepeatMode.ONE,
 }
-HA_HEOS_REPEAT_TYPE_MAP = {v: k for k, v in HEOS_HA_REPEAT_TYPE_MAP.items()}
+UC_REPEAT_MAP = {v: k for k, v in HEOS_REPEAT_MAP.items()}
+
+FEATURES = [
+    Features.ON_OFF,
+    Features.PLAY_PAUSE,
+    Features.STOP,
+    Features.NEXT,
+    Features.PREVIOUS,
+    Features.VOLUME,
+    Features.VOLUME_UP_DOWN,
+    Features.MUTE_TOGGLE,
+    Features.MUTE,
+    Features.UNMUTE,
+    Features.REPEAT,
+    Features.SHUFFLE,
+    Features.SELECT_SOURCE,
+    Features.MEDIA_DURATION,
+    Features.MEDIA_POSITION,
+    Features.MEDIA_TITLE,
+    Features.MEDIA_ARTIST,
+    Features.MEDIA_ALBUM,
+    Features.MEDIA_IMAGE_URL,
+    Features.MEDIA_TYPE,
+    Features.BROWSE_MEDIA,
+    Features.PLAY_MEDIA,
+]
 
 
-class HeosMediaPlayer(MediaPlayer):
+class HeosMediaPlayer(MediaPlayerEntity):
+    """Media player entity for a single HEOS player."""
 
-    def __init__(self, heos: Heos, player: HeosPlayer, api: ucapi.IntegrationAPI):
-        entity_id = f"heos_{player.name.lower().replace(' ', '_').replace('-', '_')}"
-        
-        features = [
-            Features.ON_OFF,
-            Features.PLAY_PAUSE,
-            Features.STOP,
-            Features.VOLUME,
-            Features.VOLUME_UP_DOWN,
-            Features.MUTE_TOGGLE,
-            Features.MUTE,
-            Features.UNMUTE,
-            Features.NEXT,
-            Features.PREVIOUS,
-            Features.REPEAT,
-            Features.SHUFFLE,
-            Features.SELECT_SOURCE,
-            Features.MEDIA_DURATION,
-            Features.MEDIA_POSITION,
-            Features.MEDIA_TITLE,
-            Features.MEDIA_ARTIST,
-            Features.MEDIA_ALBUM,
-            Features.MEDIA_IMAGE_URL,
-            Features.MEDIA_TYPE,
-        ]
-        
-        attributes = {
-            Attributes.STATE: States.STANDBY,
-            Attributes.VOLUME: 0,
-            Attributes.MUTED: False,
-            Attributes.MEDIA_DURATION: 0,
-            Attributes.MEDIA_POSITION: 0,
-            Attributes.MEDIA_TITLE: "",
-            Attributes.MEDIA_ARTIST: "",
-            Attributes.MEDIA_ALBUM: "",
-            Attributes.MEDIA_IMAGE_URL: "",
-            Attributes.SOURCE: "",
-            Attributes.SOURCE_LIST: [],
-            Attributes.REPEAT: RepeatMode.OFF,
-            Attributes.SHUFFLE: False,
-        }
-        
-        super().__init__(
-            identifier=entity_id,
-            name={"en": player.name},
-            features=features,
-            attributes=attributes,
-            device_class=DeviceClasses.RECEIVER if "avr" in player.model.lower() or "receiver" in player.model.lower() else DeviceClasses.SPEAKER,
-            cmd_handler=self._command_handler
-        )
-        
-        self._heos = heos
+    def __init__(
+        self, device_config: HeosDeviceConfig, device: HeosDevice, player: HeosPlayer
+    ) -> None:
+        self._device = device
         self._player = player
-        self._api = api
         self._player_id = player.player_id
-        self._favorites: Dict[int, Any] = {}
-        self._sources: Dict[int, Any] = {}
-        self._inputs: List[Any] = []
-        self._source_list: List[str] = []
-        self._inputs_loaded = False
-        self._sources_loaded = False
-        
+
         model_lower = player.model.lower()
-        self._is_avr = any(x in model_lower for x in ['avr', 'receiver', 'denon', 'marantz'])
-        
-        if self._is_avr:
-            _LOG.info(f"Detected AVR device: {player.name}")
+        self._is_avr = device.is_avr(player)
+        dev_class = DeviceClasses.RECEIVER if self._is_avr else DeviceClasses.SPEAKER
+
+        entity_id = f"media_player.{device_config.identifier}.{player.player_id}"
+
+        super().__init__(
+            entity_id,
+            player.name,
+            FEATURES,
+            {
+                Attributes.STATE: States.UNKNOWN,
+                Attributes.VOLUME: 0,
+                Attributes.MUTED: False,
+                Attributes.MEDIA_DURATION: 0,
+                Attributes.MEDIA_POSITION: 0,
+                Attributes.MEDIA_TITLE: "",
+                Attributes.MEDIA_ARTIST: "",
+                Attributes.MEDIA_ALBUM: "",
+                Attributes.MEDIA_IMAGE_URL: "",
+                Attributes.SOURCE: "",
+                Attributes.SOURCE_LIST: [],
+                Attributes.REPEAT: RepeatMode.OFF,
+                Attributes.SHUFFLE: False,
+            },
+            device_class=dev_class,
+            cmd_handler=self._handle_command,
+        )
+        self.subscribe_to_device(device)
+
+    async def sync_state(self) -> None:
+        if self._device.state == "UNAVAILABLE":
+            self.update({Attributes.STATE: States.UNAVAILABLE})
+            return
+
+        player = self._device.get_player(self._player_id)
+        if not player:
+            self.update({Attributes.STATE: States.UNAVAILABLE})
+            return
+
+        self._player = player
+        attrs: dict[str, Any] = {}
+        attrs[Attributes.STATE] = PLAY_STATE_MAP.get(player.state, States.STANDBY)
+        attrs[Attributes.VOLUME] = player.volume
+        attrs[Attributes.MUTED] = player.is_muted
+        attrs[Attributes.REPEAT] = HEOS_REPEAT_MAP.get(player.repeat, RepeatMode.OFF)
+        attrs[Attributes.SHUFFLE] = player.shuffle
+        attrs[Attributes.SOURCE_LIST] = self._device.get_source_list(self._player_id)
+
+        now = player.now_playing_media
+        if now:
+            attrs[Attributes.MEDIA_TITLE] = now.song or now.station or ""
+            attrs[Attributes.MEDIA_ARTIST] = now.artist or ""
+            attrs[Attributes.MEDIA_ALBUM] = now.album or ""
+            attrs[Attributes.MEDIA_IMAGE_URL] = now.image_url or ""
+            attrs[Attributes.MEDIA_DURATION] = now.duration or 0
+            attrs[Attributes.MEDIA_POSITION] = now.current_position or 0
+
+            if now.source_id is not None:
+                src = self._device.music_sources.get(now.source_id)
+                if src:
+                    attrs[Attributes.SOURCE] = src.name
+            for inp in self._device.input_sources:
+                if inp.media_id == (now.media_id or ""):
+                    attrs[Attributes.SOURCE] = inp.name
+                    break
         else:
-            _LOG.info(f"Detected Speaker device: {player.name}")
-        
-        _LOG.info(f"Created HEOS Media Player: {player.name}")
-        
-        player.add_on_player_event(self._on_player_event)
-        asyncio.create_task(self._load_account_data())
+            attrs[Attributes.MEDIA_TITLE] = ""
+            attrs[Attributes.MEDIA_ARTIST] = ""
+            attrs[Attributes.MEDIA_ALBUM] = ""
+            attrs[Attributes.MEDIA_IMAGE_URL] = ""
+            attrs[Attributes.MEDIA_DURATION] = 0
+            attrs[Attributes.MEDIA_POSITION] = 0
 
-    async def initialize(self) -> None:
-        await self.push_update()
+        self.update(attrs)
 
-    async def _load_account_data(self) -> None:
+    async def browse(self, options: BrowseOptions) -> BrowseResults | StatusCodes:
+        media_id = options.media_id
+
         try:
-            if not self._sources_loaded:
-                self._favorites = await self._heos.get_favorites()
-                self._sources = await self._heos.get_music_sources()
-                self._sources_loaded = True
-                _LOG.debug(f"Loaded {len(self._favorites)} favorites and {len(self._sources)} sources")
-            
-            if not self._inputs_loaded:
-                self._inputs = await self._heos.get_input_sources()
-                self._inputs_loaded = True
-                _LOG.debug(f"Loaded {len(self._inputs)} input sources")
-            
-            self._source_list = []
-            for fav in self._favorites.values():
-                self._source_list.append(fav.name)
-            for source in self._sources.values():
-                if source.available:
-                    self._source_list.append(source.name)
-            for input_source in self._inputs:
-                self._source_list.append(input_source.name)
-            
-            self.attributes[Attributes.SOURCE_LIST] = self._source_list
-            await self.push_update()
-            
-        except Exception as e:
-            _LOG.error(f"Error loading account data: {e}")
-
-    async def _on_player_event(self, event: str) -> None:
-        await self.push_update()
-
-    async def push_update(self) -> None:
-        try:
-            await self._update_device_state()
-            
-            if self._api and self._api.configured_entities.contains(self.id):
-                self._api.configured_entities.update_attributes(self.id, self.attributes)
-            
-        except Exception as e:
-            _LOG.error(f"Error updating {self.name}: {e}")
-
-    async def update_attributes(self) -> None:
-        try:
-            await self._update_device_state()
-            
-            if self._api and self._api.configured_entities.contains(self.id):
-                self._api.configured_entities.update_attributes(self.id, self.attributes)
-            
-        except Exception as e:
-            _LOG.error(f"Error updating {self.name}: {e}")
-
-    async def _update_device_state(self) -> None:
-        try:
-            await self._player.refresh()
-            
-            self.attributes[Attributes.STATE] = PLAY_STATE_TO_STATE.get(
-                self._player.state, States.STANDBY
-            )
-            
-            self.attributes[Attributes.VOLUME] = self._player.volume
-            self.attributes[Attributes.MUTED] = self._player.is_muted
-            
-            now_playing = self._player.now_playing_media
-            if now_playing:
-                self.attributes[Attributes.MEDIA_TITLE] = now_playing.song or ""
-                self.attributes[Attributes.MEDIA_ARTIST] = now_playing.artist or ""
-                self.attributes[Attributes.MEDIA_ALBUM] = now_playing.album or ""
-                self.attributes[Attributes.MEDIA_IMAGE_URL] = now_playing.image_url or ""
-                self.attributes[Attributes.MEDIA_DURATION] = (
-                    int(now_playing.duration / 1000) if now_playing.duration else 0
-                )
-                self.attributes[Attributes.MEDIA_POSITION] = (
-                    int(now_playing.current_position / 1000) if now_playing.current_position else 0
-                )
-                
-                current_source = None
-                if now_playing.source_id == heos_const.MUSIC_SOURCE_AUX_INPUT:
-                    for input_source in self._inputs:
-                        if input_source.media_id == now_playing.media_id:
-                            current_source = input_source.name
-                            break
-                
-                if current_source:
-                    self.attributes[Attributes.SOURCE] = current_source
-            
-            self.attributes[Attributes.REPEAT] = HEOS_HA_REPEAT_TYPE_MAP.get(
-                self._player.repeat, RepeatMode.OFF
-            )
-            self.attributes[Attributes.SHUFFLE] = self._player.shuffle
-            
-        except HeosError as e:
-            _LOG.error(f"Failed to update {self.name}: {e}")
-            self.attributes[Attributes.STATE] = States.UNAVAILABLE
-        except Exception as e:
-            _LOG.error(f"Unexpected error updating {self.name}: {e}")
-            self.attributes[Attributes.STATE] = States.UNAVAILABLE
-
-    async def _command_handler(self, entity: MediaPlayer, cmd_id: str, params: Dict[str, Any] = None) -> StatusCodes:
-        try:
-            params = params or {}
-            _LOG.info(f"Command: {cmd_id} for {self.name}")
-            
-            if cmd_id in [Commands.ON, "turn_on", "on"]:
-                await self._player.play()
-                
-            elif cmd_id in [Commands.OFF, "turn_off", "off"]:
-                if self._is_avr:
-                    _LOG.info(f"AVR shutdown: volume 0 + stop")
-                    try:
-                        current_volume = self._player.volume
-                        await self._player.set_volume(0)
-                        await asyncio.sleep(0.3)
-                        await self._player.stop()
-                        _LOG.info(f"AVR shutdown complete (previous volume: {current_volume})")
-                    except Exception as e:
-                        _LOG.error(f"Error during AVR shutdown: {e}")
-                        await self._player.stop()
+            if not media_id or media_id == "root":
+                raw_items = await self._device.browse_root()
+            elif media_id == "favorites":
+                raw_items = await self._device.browse_favorites()
+            elif media_id == "inputs":
+                raw_items = await self._device.browse_inputs()
+            elif media_id.startswith("source_"):
+                source_id = int(media_id.split("_", 1)[1])
+                raw_items = await self._device.browse_music_source(source_id)
+            elif media_id.startswith("media_"):
+                parts = media_id.split("_", 3)
+                if len(parts) >= 3:
+                    source_id = int(parts[1])
+                    container_id = parts[2] if len(parts) > 2 else ""
+                    raw_items = await self._device.browse_container(source_id, container_id)
                 else:
-                    _LOG.info(f"Speaker stop")
-                    await self._player.stop()
-                
-            elif cmd_id == Commands.STOP:
-                await self._player.stop()
-                
-            elif cmd_id == Commands.PLAY_PAUSE:
-                if self._player.state == PlayState.PLAY:
-                    await self._player.pause()
-                else:
-                    await self._player.play()
-                
-            elif cmd_id == Commands.NEXT:
-                await self._player.play_next()
-                
-            elif cmd_id == Commands.PREVIOUS:
-                await self._player.play_previous()
-                
-            elif cmd_id == Commands.VOLUME_UP:
-                await self._player.volume_up(params.get("step", 5))
-                
-            elif cmd_id == Commands.VOLUME_DOWN:
-                await self._player.volume_down(params.get("step", 5))
-                
-            elif cmd_id == Commands.VOLUME:
-                await self._player.set_volume(int(params.get("volume", 50)))
-                
-            elif cmd_id == Commands.MUTE_TOGGLE:
-                await self._player.toggle_mute()
-                
-            elif cmd_id == Commands.MUTE:
-                await self._player.set_mute(True)
-                
-            elif cmd_id == Commands.UNMUTE:
-                await self._player.set_mute(False)
-                
-            elif cmd_id == Commands.REPEAT:
-                repeat_mode = params.get("repeat", "OFF")
-                heos_repeat = HA_HEOS_REPEAT_TYPE_MAP.get(RepeatMode(repeat_mode), RepeatType.OFF)
-                await self._player.set_play_mode(heos_repeat, self._player.shuffle)
-                
-            elif cmd_id == Commands.SHUFFLE:
-                shuffle_state = params.get("shuffle", False)
-                await self._player.set_play_mode(self._player.repeat, shuffle_state)
-                
-            elif cmd_id == Commands.SELECT_SOURCE:
-                source_name = params.get("source")
-                if not source_name:
-                    _LOG.error("No source specified")
-                    return StatusCodes.BAD_REQUEST
-                
-                source_found = False
-                
-                for fav_id, fav in self._favorites.items():
-                    if fav.name == source_name:
-                        _LOG.info(f"Playing favorite: {source_name}")
-                        await self._heos.play_preset_station(self._player_id, fav_id)
-                        source_found = True
-                        break
-                
-                if not source_found:
-                    for input_source in self._inputs:
-                        if input_source.name == source_name:
-                            _LOG.info(f"Playing input: {source_name}")
-                            await self._heos.play_input_source(self._player_id, input_source.media_id)
-                            source_found = True
-                            break
-                
-                if not source_found:
-                    for source_id, source in self._sources.items():
-                        if source.name == source_name and source.available:
-                            _LOG.info(f"Playing music source: {source_name}")
-                            try:
-                                browse_result = await self._heos.browse(source_id)
-                                if browse_result and len(browse_result) > 0:
-                                    first_item = browse_result[0]
-                                    if first_item.playable:
-                                        await self._heos.add_to_queue(
-                                            self._player_id,
-                                            source_id,
-                                            first_item.media_id,
-                                            AddCriteriaType.PLAY_NOW
-                                        )
-                                        source_found = True
-                                    elif first_item.container:
-                                        container_result = await self._heos.browse(source_id, first_item.media_id)
-                                        if container_result and len(container_result) > 0:
-                                            first_playable = container_result[0]
-                                            await self._heos.add_to_queue(
-                                                self._player_id,
-                                                source_id,
-                                                first_playable.media_id,
-                                                AddCriteriaType.PLAY_NOW
-                                            )
-                                            source_found = True
-                            except Exception as e:
-                                _LOG.error(f"Error playing music source {source_name}: {e}")
-                            break
-                
-                if not source_found:
-                    _LOG.error(f"Source not found: {source_name}")
-                    return StatusCodes.BAD_REQUEST
-            
+                    raw_items = []
             else:
-                _LOG.warning(f"Unsupported command: {cmd_id}")
-                return StatusCodes.BAD_REQUEST
-            
-            await asyncio.sleep(0.5)
-            await self.push_update()
+                raw_items = []
+
+            browse_items = []
+            for item in raw_items:
+                browse_items.append(
+                    BrowseMediaItem(
+                        media_id=item["media_id"],
+                        title=item["title"],
+                        subtitle=item.get("artist"),
+                        artist=item.get("artist"),
+                        album=item.get("album"),
+                        media_class=item.get("media_class"),
+                        media_type=None,
+                        can_browse=item.get("can_browse", False),
+                        can_play=item.get("can_play", False),
+                        can_search=None,
+                        thumbnail=item.get("thumbnail"),
+                        duration=None,
+                        items=None,
+                    )
+                )
+
+            root_item = BrowseMediaItem(
+                media_id=media_id or "root",
+                title="HEOS" if not media_id or media_id == "root" else media_id,
+                subtitle=None,
+                artist=None,
+                album=None,
+                media_class=MediaClass.DIRECTORY,
+                media_type=None,
+                can_browse=True,
+                can_play=False,
+                can_search=None,
+                thumbnail=None,
+                duration=None,
+                items=browse_items,
+            )
+
+            return BrowseResults(
+                media=root_item,
+                pagination=Pagination(page=1, limit=len(browse_items), count=len(browse_items)),
+            )
+        except Exception as err:
+            _LOG.error("Browse error for %s: %s", media_id, err)
+            return StatusCodes.SERVER_ERROR
+
+    async def _handle_command(
+        self, entity: media_player.MediaPlayer, cmd_id: str, params: dict[str, Any] | None
+    ) -> StatusCodes:
+        params = params or {}
+        player = self._device.get_player(self._player_id)
+        if not player:
+            return StatusCodes.SERVICE_UNAVAILABLE
+
+        try:
+            match cmd_id:
+                case Commands.ON:
+                    await player.play()
+
+                case Commands.OFF:
+                    if self._is_avr:
+                        try:
+                            await player.set_volume(0)
+                            await asyncio.sleep(0.3)
+                            await player.stop()
+                        except Exception:
+                            await player.stop()
+                    else:
+                        await player.stop()
+
+                case Commands.PLAY_PAUSE:
+                    if player.state == PlayState.PLAY:
+                        await player.pause()
+                    else:
+                        await player.play()
+
+                case Commands.STOP:
+                    await player.stop()
+
+                case Commands.NEXT:
+                    await player.play_next()
+
+                case Commands.PREVIOUS:
+                    await player.play_previous()
+
+                case Commands.VOLUME:
+                    vol = int(params.get("volume", 0))
+                    await player.set_volume(vol)
+
+                case Commands.VOLUME_UP:
+                    await player.volume_up(params.get("step", 5))
+
+                case Commands.VOLUME_DOWN:
+                    await player.volume_down(params.get("step", 5))
+
+                case Commands.MUTE_TOGGLE:
+                    await player.toggle_mute()
+
+                case Commands.MUTE:
+                    await player.mute()
+
+                case Commands.UNMUTE:
+                    await player.unmute()
+
+                case Commands.REPEAT:
+                    mode = params.get("repeat", "OFF")
+                    heos_repeat = UC_REPEAT_MAP.get(RepeatMode(mode), RepeatType.OFF)
+                    await player.set_play_mode(heos_repeat, player.shuffle)
+
+                case Commands.SHUFFLE:
+                    shuffle = params.get("shuffle", False)
+                    await player.set_play_mode(player.repeat, shuffle)
+
+                case Commands.SELECT_SOURCE:
+                    source = params.get("source", "")
+                    if not source:
+                        return StatusCodes.BAD_REQUEST
+                    found = await self._device.play_source_by_name(self._player_id, source)
+                    if not found:
+                        _LOG.warning("Source not found: %s", source)
+                        return StatusCodes.BAD_REQUEST
+
+                case Commands.PLAY_MEDIA:
+                    media_id = params.get("media_id", "")
+                    if not media_id:
+                        return StatusCodes.BAD_REQUEST
+                    played = await self._device.play_media_by_id(self._player_id, media_id)
+                    if not played:
+                        return StatusCodes.BAD_REQUEST
+
+                case _:
+                    return StatusCodes.NOT_IMPLEMENTED
+
             return StatusCodes.OK
-            
-        except HeosError as e:
-            _LOG.error(f"HEOS error executing command {cmd_id}: {e}")
+
+        except HeosError as err:
+            _LOG.error("[%s] HEOS command error %s: %s", entity.id, cmd_id, err)
             return StatusCodes.SERVER_ERROR
-        except Exception as e:
-            _LOG.error(f"Unexpected error executing command {cmd_id}: {e}")
+        except Exception as err:
+            _LOG.error("[%s] Command error %s: %s", entity.id, cmd_id, err)
             return StatusCodes.SERVER_ERROR
+
+
+def create_media_players(
+    device_config: HeosDeviceConfig, device: HeosDevice
+) -> list[HeosMediaPlayer]:
+    entities = []
+    for player in device.players.values():
+        entities.append(HeosMediaPlayer(device_config, device, player))
+    return entities

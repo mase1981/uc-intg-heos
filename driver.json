@@ -1,21 +1,20 @@
 {
   "driver_id": "uc-intg-heos",
-  "version": "1.1.4",
-  "min_core_api": "0.21.0",
+  "version": "2.0.0",
+  "min_core_api": "0.22.0",
   "name": {
     "en": "HEOS Integration"
   },
   "icon": "uc:music",
   "description": {
-    "en": "Complete HEOS integration with account-based setup. Automatically discovers all your Denon/Marantz HEOS devices and provides comprehensive control including multi-room grouping, favorites, input sources, and music services."
+    "en": "Complete HEOS integration with account-based setup. Automatically discovers all Denon/Marantz HEOS devices with media player, remote, sensor, select entities and media browsing support."
   },
-  "port": 9090,
   "developer": {
     "name": "Meir Miyara",
     "email": "meir.miyara@gmail.com",
     "url": "https://github.com/mase1981"
   },
-  "homepage": "https://github.com/mase1981/uc-intg-heos",
+  "home_page": "https://github.com/mase1981/uc-intg-heos",
   "setup_data_schema": {
     "title": {
       "en": "HEOS Integration Setup"
@@ -29,12 +28,12 @@
         "field": {
           "label": {
             "value": {
-              "en": "This integration uses your HEOS account to automatically discover and control all your HEOS devices. You'll need:\n\n• IP address of any HEOS device on your network\n• Your HEOS account username and password\n\nAll configured devices on your account will be automatically discovered as separate media player entities with full functionality including grouping, favorites, inputs, and music services."
+              "en": "Enter your HEOS device IP address and account credentials on the next screen. All HEOS devices on your account will be automatically discovered."
             }
           }
         }
       }
     ]
   },
-  "release_date": "2026-01-15"
+  "release_date": "2026-04-22"
 }
