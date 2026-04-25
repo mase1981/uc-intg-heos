@@ -26,5 +26,4 @@ class HeosDriver(BaseIntegrationDriver[HeosDevice, HeosDeviceConfig]):
                 lambda cfg, dev: create_sensors(cfg, dev),
                 lambda cfg, dev: create_selects(cfg, dev),
             ],
-            require_connection_before_registry=True,
         )
