@@ -123,6 +123,7 @@ class HeosDevice(PollingDevice):
             _LOG.warning("[%s] Initial account data load failed: %s", self.log_id, err)
 
         self._state = "ON"
+        self.push_update()
         return self._heos
 
     async def poll_device(self) -> None:
@@ -192,8 +193,7 @@ class HeosDevice(PollingDevice):
             _LOG.debug("[%s] Failed to load favorites: %s", self.log_id, err)
 
         try:
-            sources = await self._heos.get_music_sources()
-            self._music_sources = {s.source_id: s for s in sources}
+            self._music_sources = await self._heos.get_music_sources()
             _LOG.debug("[%s] Loaded %d music sources", self.log_id, len(self._music_sources))
         except HeosError as err:
             _LOG.debug("[%s] Failed to load music sources: %s", self.log_id, err)
