@@ -14,7 +14,7 @@ from ucapi import remote, StatusCodes
 from ucapi.ui import Buttons, Size, UiPage, create_btn_mapping, create_ui_icon, create_ui_text
 
 from pyheos import HeosError, HeosPlayer
-from pyheos.types import RepeatType
+from pyheos.types import PlayState, RepeatType
 
 from ucapi_framework import RemoteEntity
 
@@ -168,7 +168,7 @@ class HeosRemote(RemoteEntity):
                                 pass
                         await player.stop()
                     case "PLAY_PAUSE":
-                        if player.state == "play":
+                        if player.state == PlayState.PLAY:
                             await player.pause()
                         else:
                             await player.play()

@@ -33,7 +33,8 @@ class HeosDevice(PollingDevice):
         self._music_sources: dict[int, MediaMusicSource] = {}
         self._input_sources: list[MediaItem] = []
         self._source_lists: dict[int, list[str]] = {}
-        self._event_unsubs: list = []
+        self._player_unsubs: list = []
+        self._controller_unsub = None
 
     @property
     def identifier(self) -> str:
@@ -131,6 +132,10 @@ class HeosDevice(PollingDevice):
             return
         try:
             await self._refresh_players()
+            if self._state == "UNAVAILABLE":
+                self._state = "ON"
+                _LOG.info("[%s] Connection recovered", self.log_id)
+                self.events.emit(DeviceEvents.CONNECTED, self.identifier)
             self.push_update()
         except HeosError as err:
             _LOG.debug("[%s] Poll error: %s", self.log_id, err)
@@ -141,9 +146,12 @@ class HeosDevice(PollingDevice):
             _LOG.debug("[%s] Unexpected poll error: %s", self.log_id, err)
 
     async def disconnect(self) -> None:
-        for unsub in self._event_unsubs:
+        for unsub in self._player_unsubs:
             unsub()
-        self._event_unsubs.clear()
+        self._player_unsubs.clear()
+        if self._controller_unsub:
+            self._controller_unsub()
+            self._controller_unsub = None
 
         if self._heos:
             try:
@@ -157,22 +165,30 @@ class HeosDevice(PollingDevice):
         await super().disconnect()
 
     def _register_event_callbacks(self) -> None:
+        self._register_player_callbacks()
+        self._controller_unsub = self._heos.add_on_controller_event(self._on_controller_event)
+
+    def _register_player_callbacks(self) -> None:
         for player in self._players.values():
             unsub = player.add_on_player_event(self._on_player_event)
-            self._event_unsubs.append(unsub)
+            self._player_unsubs.append(unsub)
 
-        unsub = self._heos.add_on_controller_event(self._on_controller_event)
-        self._event_unsubs.append(unsub)
+    def _unregister_player_callbacks(self) -> None:
+        for unsub in self._player_unsubs:
+            unsub()
+        self._player_unsubs.clear()
 
-    async def _on_player_event(self, player_id: int, event: str) -> None:
-        _LOG.debug("[%s] Player event: player=%d event=%s", self.log_id, player_id, event)
+    async def _on_player_event(self, event: str) -> None:
+        _LOG.debug("[%s] Player event: %s", self.log_id, event)
         self.push_update()
 
     async def _on_controller_event(self, event: str, data: Any = None) -> None:
         _LOG.debug("[%s] Controller event: %s", self.log_id, event)
-        if event in ("players_changed", "groups_changed"):
+        if "players_changed" in event or "groups_changed" in event or "sources_changed" in event:
             try:
-                self._players = await self._heos.get_players()
+                self._unregister_player_callbacks()
+                self._players = await self._heos.get_players(refresh=True)
+                self._register_player_callbacks()
                 await self._load_account_data()
             except HeosError as err:
                 _LOG.warning("[%s] Failed to refresh after controller event: %s", self.log_id, err)
