@@ -7,6 +7,7 @@ HEOS Integration constants.
 
 POLL_INTERVAL = 10
 POLL_INTERVAL_STANDBY = 30
+UPDATE_THROTTLE = 2.0
 
 AVR_KEYWORDS = ["avr", "receiver", "denon avr", "marantz sr", "marantz nr"]
 

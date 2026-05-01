@@ -6,6 +6,7 @@ HEOS device implementing PollingDevice pattern.
 """
 
 import logging
+import time
 from typing import Any
 
 from pyheos import Heos, HeosError, HeosOptions, HeosPlayer
@@ -15,7 +16,7 @@ from pyheos.types import PlayState, RepeatType, AddCriteriaType
 from ucapi_framework import DeviceEvents, PollingDevice
 
 from uc_intg_heos.config import HeosDeviceConfig
-from uc_intg_heos.const import AVR_KEYWORDS, POLL_INTERVAL
+from uc_intg_heos.const import AVR_KEYWORDS, POLL_INTERVAL, UPDATE_THROTTLE
 
 _LOG = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class HeosDevice(PollingDevice):
         self._source_lists: dict[int, list[str]] = {}
         self._player_unsubs: list = []
         self._controller_unsub = None
+        self._last_update_time: float = 0.0
 
     @property
     def identifier(self) -> str:
@@ -86,11 +88,18 @@ class HeosDevice(PollingDevice):
         model_lower = player.model.lower()
         return any(kw in model_lower for kw in AVR_KEYWORDS)
 
+    def _throttled_push_update(self) -> None:
+        now = time.monotonic()
+        if now - self._last_update_time < UPDATE_THROTTLE:
+            return
+        self._last_update_time = now
+        self.push_update()
+
     async def establish_connection(self) -> Heos:
         options = HeosOptions(
             host=self._device_config.host,
             events=True,
-            all_progress_events=True,
+            all_progress_events=False,
             auto_reconnect=True,
             auto_reconnect_delay=5.0,
             heart_beat=True,
@@ -136,6 +145,7 @@ class HeosDevice(PollingDevice):
                 self._state = "ON"
                 _LOG.info("[%s] Connection recovered", self.log_id)
                 self.events.emit(DeviceEvents.CONNECTED, self.identifier)
+            self._last_update_time = 0.0
             self.push_update()
         except HeosError as err:
             _LOG.debug("[%s] Poll error: %s", self.log_id, err)
@@ -180,7 +190,9 @@ class HeosDevice(PollingDevice):
 
     async def _on_player_event(self, event: str) -> None:
         _LOG.debug("[%s] Player event: %s", self.log_id, event)
-        self.push_update()
+        if "player_now_playing_progress" in event:
+            return
+        self._throttled_push_update()
 
     async def _on_controller_event(self, event: str, data: Any = None) -> None:
         _LOG.debug("[%s] Controller event: %s", self.log_id, event)
@@ -192,6 +204,7 @@ class HeosDevice(PollingDevice):
                 await self._load_account_data()
             except HeosError as err:
                 _LOG.warning("[%s] Failed to refresh after controller event: %s", self.log_id, err)
+        self._last_update_time = 0.0
         self.push_update()
 
     async def _refresh_players(self) -> None:
