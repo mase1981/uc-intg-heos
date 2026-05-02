@@ -231,11 +231,11 @@ class HeosRemote(RemoteEntity):
             _LOG.error("[%s] Cannot ungroup: HEOS not connected", self._player_id)
             raise HeosError("HEOS not connected")
 
-        groups = await heos.get_groups()
+        groups = await heos.get_groups(refresh=True)
         my_group = None
         for group in groups.values():
-            member_ids = [group.leader.player_id] + [m.player_id for m in group.members]
-            if self._player_id in member_ids:
+            all_ids = [group.lead_player_id] + list(group.member_player_ids)
+            if self._player_id in all_ids:
                 my_group = group
                 break
 
@@ -243,20 +243,17 @@ class HeosRemote(RemoteEntity):
             _LOG.info("[%s] Player not in any group, nothing to ungroup", self._player_id)
             return
 
-        remaining = [pid for pid in
-                     [my_group.leader.player_id] + [m.player_id for m in my_group.members]
-                     if pid != self._player_id]
+        all_ids = [my_group.lead_player_id] + list(my_group.member_player_ids)
+        remaining = [pid for pid in all_ids if pid != self._player_id]
 
-        if len(remaining) <= 1:
-            await self._execute_with_retry(
-                lambda: heos.set_group([remaining[0]] if remaining else [self._player_id]),
-                "LEAVE_GROUP",
-            )
-        else:
-            await self._execute_with_retry(
-                lambda: heos.set_group(remaining),
-                "LEAVE_GROUP",
-            )
+        if not remaining:
+            _LOG.info("[%s] Last member in group, dissolving", self._player_id)
+            return
+
+        await self._execute_with_retry(
+            lambda: heos.set_group(remaining),
+            "LEAVE_GROUP",
+        )
 
     async def _handle_group_with(self, command: str, player: HeosPlayer) -> None:
         heos = self._device.heos
