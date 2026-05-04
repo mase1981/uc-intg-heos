@@ -216,30 +216,23 @@ class HeosRemote(RemoteEntity):
     async def _group_all(self, player: HeosPlayer) -> None:
         heos = self._device.heos
         if not heos:
-            _LOG.error("[%s] Cannot group: HEOS not connected", self._player_id)
             raise HeosError("HEOS not connected")
         all_ids = [self._player_id] + [
             pid for pid in self._device.players if pid != self._player_id
         ]
-        await self._execute_with_retry(
-            lambda: heos.set_group(all_ids), "GROUP_ALL"
-        )
+        await self._execute_with_retry(lambda: heos.set_group(all_ids), "GROUP_ALL")
 
     async def _leave_group(self) -> None:
         heos = self._device.heos
         if not heos:
-            _LOG.error("[%s] Cannot ungroup: HEOS not connected", self._player_id)
             raise HeosError("HEOS not connected")
         await self._execute_with_retry(
-            lambda: heos.set_group([self._player_id]),
-            "LEAVE_GROUP",
-            retries=5,
+            lambda: heos.set_group([self._player_id]), "LEAVE_GROUP"
         )
 
     async def _handle_group_with(self, command: str, player: HeosPlayer) -> None:
         heos = self._device.heos
         if not heos:
-            _LOG.error("[%s] Cannot group: HEOS not connected", self._player_id)
             raise HeosError("HEOS not connected")
         target_name = command.replace("GROUP_WITH_", "")
         for pid, p in self._device.players.items():
@@ -251,7 +244,7 @@ class HeosRemote(RemoteEntity):
                 return
         _LOG.warning("Group target not found: %s", target_name)
 
-    async def _execute_with_retry(self, func, name: str, retries: int = 5) -> None:
+    async def _execute_with_retry(self, func, name: str, retries: int = 2) -> None:
         for attempt in range(retries):
             try:
                 await func()
@@ -259,7 +252,7 @@ class HeosRemote(RemoteEntity):
             except HeosError as err:
                 _LOG.warning("[%s] %s attempt %d/%d failed: %s", self._player_id, name, attempt + 1, retries, err)
                 if "Processing previous command" in str(err) and attempt < retries - 1:
-                    await asyncio.sleep(2.0 + attempt * 2)
+                    await asyncio.sleep(1.0)
                     continue
                 raise
 
