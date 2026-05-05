@@ -220,15 +220,21 @@ class HeosRemote(RemoteEntity):
         all_ids = [self._player_id] + [
             pid for pid in self._device.players if pid != self._player_id
         ]
-        await self._execute_with_retry(lambda: heos.set_group(all_ids), "GROUP_ALL")
+        try:
+            await self._execute_with_retry(lambda: heos.set_group(all_ids), "GROUP_ALL")
+        except HeosError as err:
+            _LOG.info("[%s] GROUP_ALL ignored (already grouped?): %s", self._player_id, err)
 
     async def _leave_group(self) -> None:
         heos = self._device.heos
         if not heos:
             raise HeosError("HEOS not connected")
-        await self._execute_with_retry(
-            lambda: heos.set_group([self._player_id]), "LEAVE_GROUP"
-        )
+        try:
+            await self._execute_with_retry(
+                lambda: heos.set_group([self._player_id]), "LEAVE_GROUP"
+            )
+        except HeosError as err:
+            _LOG.info("[%s] LEAVE_GROUP ignored (not in group?): %s", self._player_id, err)
 
     async def _handle_group_with(self, command: str, player: HeosPlayer) -> None:
         heos = self._device.heos
@@ -237,10 +243,13 @@ class HeosRemote(RemoteEntity):
         target_name = command.replace("GROUP_WITH_", "")
         for pid, p in self._device.players.items():
             if _safe_cmd_name(p.name) == target_name:
-                await self._execute_with_retry(
-                    lambda pid=pid: heos.set_group([self._player_id, pid]),
-                    f"GROUP_WITH_{target_name}",
-                )
+                try:
+                    await self._execute_with_retry(
+                        lambda pid=pid: heos.set_group([self._player_id, pid]),
+                        f"GROUP_WITH_{target_name}",
+                    )
+                except HeosError as err:
+                    _LOG.info("[%s] GROUP_WITH_%s ignored (already grouped?): %s", self._player_id, target_name, err)
                 return
         _LOG.warning("Group target not found: %s", target_name)
 
