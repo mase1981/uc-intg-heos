@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any
 
-from pyheos import Heos, HeosError, HeosOptions, HeosPlayer
+from pyheos import Heos, HeosError, HeosOptions, HeosPlayer  # type: ignore[import-untyped]
 from pyheos.media import MediaItem, MediaMusicSource
 from pyheos.types import PlayState, RepeatType, AddCriteriaType
 
@@ -104,6 +104,7 @@ class HeosDevice(PollingDevice):
             auto_reconnect_delay=5.0,
             heart_beat=True,
             heart_beat_interval=30.0,
+            timeout=30,
         )
         self._heos = Heos(options)
         await self._heos.connect()
