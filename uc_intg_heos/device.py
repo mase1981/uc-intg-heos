@@ -96,6 +96,7 @@ class HeosDevice(PollingDevice):
         self.push_update()
 
     async def establish_connection(self) -> Heos:
+        await self._teardown_client()
         options = HeosOptions(
             host=self._device_config.host,
             events=True,
@@ -156,7 +157,7 @@ class HeosDevice(PollingDevice):
         except Exception as err:
             _LOG.debug("[%s] Unexpected poll error: %s", self.log_id, err)
 
-    async def disconnect(self) -> None:
+    async def _teardown_client(self) -> None:
         for unsub in self._player_unsubs:
             unsub()
         self._player_unsubs.clear()
@@ -172,6 +173,9 @@ class HeosDevice(PollingDevice):
             self._heos = None
 
         self._players.clear()
+
+    async def disconnect(self) -> None:
+        await self._teardown_client()
         self._state = "UNAVAILABLE"
         await super().disconnect()
 

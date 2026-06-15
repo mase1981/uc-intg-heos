@@ -25,8 +25,8 @@ classifiers = [
     "Topic :: Home Automation",
 ]
 dependencies = [
-    "ucapi-framework>=1.9.1",
-    "ucapi>=0.6.0",
+    "ucapi-framework>=1.9.5",
+    "ucapi>=0.7.0",
     "pyheos>=1.0.5",
 ]
 dynamic = ["version"]
