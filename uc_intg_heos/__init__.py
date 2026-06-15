@@ -51,9 +51,9 @@ async def main():
 
     setup_handler = HeosSetupFlow.create_handler(driver)
     driver_path = os.path.join(os.path.dirname(__file__), "..", "driver.json")
-    await driver.api.init(os.path.abspath(driver_path), setup_handler)
-
     await driver.register_all_device_instances(connect=False)
+
+    await driver.api.init(os.path.abspath(driver_path), setup_handler)
 
     device_count = len(list(config_manager.all()))
     if device_count > 0:
