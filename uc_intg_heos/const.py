@@ -5,8 +5,8 @@ HEOS Integration constants.
 :license: MPL-2.0, see LICENSE for more details.
 """
 
-POLL_INTERVAL = 10
-POLL_INTERVAL_STANDBY = 30
+POLL_INTERVAL = 30
+POLL_INTERVAL_STANDBY = 60
 UPDATE_THROTTLE = 2.0
 
 AVR_KEYWORDS = ["avr", "receiver", "denon avr", "marantz sr", "marantz nr"]
