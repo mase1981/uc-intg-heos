@@ -17,3 +17,4 @@ class HeosDeviceConfig:
     host: str = ""
     username: str = ""
     password: str = ""
+    volume_step: int = 5

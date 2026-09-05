@@ -1,3 +1,3 @@
-ucapi-framework>=1.9.5
+ucapi-framework>=1.9.6
 ucapi>=0.7.0
 pyheos>=1.0.5

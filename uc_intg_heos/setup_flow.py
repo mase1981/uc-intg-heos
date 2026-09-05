@@ -46,6 +46,11 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
                     "label": {"en": "HEOS Account Password"},
                     "field": {"password": {"value": ""}},
                 },
+                {
+                    "id": "volume_step",
+                    "label": {"en": "Volume Step (1-25)"},
+                    "field": {"number": {"value": 5, "min": 1, "max": 25, "steps": 1}},
+                },
             ],
         )
 
@@ -55,6 +60,12 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
         host = input_values.get("host", "").strip()
         username = input_values.get("username", "").strip()
         password = input_values.get("password", "").strip()
+
+        try:
+            volume_step = int(input_values.get("volume_step", 5))
+        except (TypeError, ValueError):
+            volume_step = 5
+        volume_step = max(1, min(25, volume_step))
 
         if not host:
             raise ValueError("IP address is required")
@@ -101,4 +112,5 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
             host=host,
             username=username,
             password=password,
+            volume_step=volume_step,
         )

@@ -177,9 +177,9 @@ class HeosRemote(RemoteEntity):
                     case "PREVIOUS":
                         await player.play_previous()
                     case "VOLUME_UP":
-                        await player.volume_up(5)
+                        await player.volume_up(self._device.volume_step)
                     case "VOLUME_DOWN":
-                        await player.volume_down(5)
+                        await player.volume_down(self._device.volume_step)
                     case "MUTE_TOGGLE":
                         await player.toggle_mute()
                     case "REPEAT_OFF":
