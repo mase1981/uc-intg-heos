@@ -274,10 +274,10 @@ class HeosMediaPlayer(MediaPlayerEntity):
                     await player.set_volume(vol)
 
                 case Commands.VOLUME_UP:
-                    await player.volume_up(params.get("step", 5))
+                    await player.volume_up(params.get("step", self._device.volume_step))
 
                 case Commands.VOLUME_DOWN:
-                    await player.volume_down(params.get("step", 5))
+                    await player.volume_down(params.get("step", self._device.volume_step))
 
                 case Commands.MUTE_TOGGLE:
                     await player.toggle_mute()

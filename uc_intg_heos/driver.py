@@ -36,6 +36,36 @@ class HeosDriver(BaseIntegrationDriver[HeosDevice, HeosDeviceConfig]):
             require_connection_before_registry=True,
         )
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        self._subscribed_entity_ids: set[str] = set()
+
+    async def on_subscribe_entities(self, entity_ids: list[str]) -> None:
+        """Reconcile configured entities the moment they become available.
+
+        Hub-mode registers entities only after connect, so on a Remote restart a
+        command/subscribe can arrive before registration finishes. Track the
+        subscription and reconcile independently of connection-state timing.
+        """
+        self._subscribed_entity_ids.update(entity_ids)
+        await super().on_subscribe_entities(entity_ids)
+        await self._configure_subscribed(entity_ids)
+
+    async def on_unsubscribe_entities(self, entity_ids: list[str]) -> None:
+        self._subscribed_entity_ids.difference_update(entity_ids)
+        await super().on_unsubscribe_entities(entity_ids)
+
+    async def async_register_available_entities(self, device_config, device) -> None:
+        await super().async_register_available_entities(device_config, device)
+        await self._configure_subscribed(self._subscribed_entity_ids)
+
+    async def _configure_subscribed(self, entity_ids) -> None:
+        for entity_id in list(entity_ids):
+            if self.api.configured_entities.contains(entity_id):
+                continue
+            entity = self.api.available_entities.get(entity_id)
+            if entity is None:
+                continue
+            self.api.configured_entities.add(entity)
+            await self.refresh_entity_state(entity_id)
 
     async def on_r2_enter_standby(self) -> None:
         """Keep HEOS connections alive while the Remote is in standby.

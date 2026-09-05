@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any
 
-from pyheos import Heos, HeosError, HeosOptions, HeosPlayer  # type: ignore[import-untyped]
+from pyheos import Heos, HeosError, HeosOptions, HeosPlayer, ConnectionState  # type: ignore[import-untyped]
 from pyheos.media import MediaItem, MediaMusicSource
 from pyheos.types import PlayState, RepeatType, AddCriteriaType
 
@@ -36,6 +36,7 @@ class HeosDevice(PollingDevice):
         self._source_lists: dict[int, list[str]] = {}
         self._player_unsubs: list = []
         self._controller_unsub = None
+        self._conn_unsubs: list = []
         self._last_update_time: float = 0.0
 
     @property
@@ -57,6 +58,10 @@ class HeosDevice(PollingDevice):
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def volume_step(self) -> int:
+        return self._device_config.volume_step
 
     @property
     def heos(self) -> Heos | None:
@@ -128,6 +133,10 @@ class HeosDevice(PollingDevice):
         )
 
         self._register_event_callbacks()
+        self._conn_unsubs.append(self._heos.add_on_connected(self._on_heos_connected))
+        self._conn_unsubs.append(
+            self._heos.add_on_disconnected(self._on_heos_disconnected)
+        )
 
         try:
             await self._load_account_data()
@@ -140,6 +149,13 @@ class HeosDevice(PollingDevice):
 
     async def poll_device(self) -> None:
         if not self._heos:
+            return
+        if self._heos.connection_state != ConnectionState.CONNECTED:
+            if self._state != "UNAVAILABLE":
+                self._state = "UNAVAILABLE"
+                _LOG.info("[%s] Connection down (%s)", self.log_id, self._heos.connection_state)
+                self.events.emit(DeviceEvents.DISCONNECTED, self.identifier)
+                self.push_update()
             return
         try:
             await self._refresh_players()
@@ -157,10 +173,31 @@ class HeosDevice(PollingDevice):
         except Exception as err:
             _LOG.debug("[%s] Unexpected poll error: %s", self.log_id, err)
 
+    async def _on_heos_connected(self) -> None:
+        _LOG.info("[%s] HEOS connection restored", self.log_id)
+        self._state = "ON"
+        self.events.emit(DeviceEvents.CONNECTED, self.identifier)
+        try:
+            await self._refresh_players()
+        except HeosError as err:
+            _LOG.debug("[%s] Refresh after reconnect failed: %s", self.log_id, err)
+        self._last_update_time = 0.0
+        self.push_update()
+
+    async def _on_heos_disconnected(self) -> None:
+        if self._state != "UNAVAILABLE":
+            self._state = "UNAVAILABLE"
+            _LOG.warning("[%s] HEOS connection lost", self.log_id)
+            self.events.emit(DeviceEvents.DISCONNECTED, self.identifier)
+            self.push_update()
+
     async def _teardown_client(self) -> None:
         for unsub in self._player_unsubs:
             unsub()
         self._player_unsubs.clear()
+        for unsub in self._conn_unsubs:
+            unsub()
+        self._conn_unsubs.clear()
         if self._controller_unsub:
             self._controller_unsub()
             self._controller_unsub = None
