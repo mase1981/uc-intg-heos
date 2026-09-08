@@ -8,15 +8,16 @@ HEOS Integration setup flow.
 import logging
 from typing import Any
 
-from ucapi import RequestUserInput
-
 from pyheos import Heos, HeosError, HeosOptions
-
+from ucapi import RequestUserInput
 from ucapi_framework import BaseSetupFlow
 
 from uc_intg_heos.config import HeosDeviceConfig
+from uc_intg_heos.const import DEFAULT_VOLUME_STEP
 
 _LOG = logging.getLogger(__name__)
+MAX_VOLUME_STEP: int = 10
+MIN_VOLUME_STEP: int = 1
 
 
 class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
@@ -48,8 +49,17 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
                 },
                 {
                     "id": "volume_step",
-                    "label": {"en": "Volume Step (1-25)"},
-                    "field": {"number": {"value": 5, "min": 1, "max": 25, "steps": 1}},
+                    "label": {
+                        "en": f"Volume Step ({MIN_VOLUME_STEP}-{MAX_VOLUME_STEP})"
+                    },
+                    "field": {
+                        "number": {
+                            "value": DEFAULT_VOLUME_STEP,
+                            "min": MIN_VOLUME_STEP,
+                            "max": MAX_VOLUME_STEP,
+                            "steps": 1,
+                        }
+                    },
                 },
             ],
         )
@@ -62,20 +72,22 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
         password = input_values.get("password", "").strip()
 
         try:
-            volume_step = int(input_values.get("volume_step", 5))
+            volume_step = int(input_values.get("volume_step", DEFAULT_VOLUME_STEP))
         except (TypeError, ValueError):
-            volume_step = 5
-        volume_step = max(1, min(25, volume_step))
+            volume_step = DEFAULT_VOLUME_STEP
+        volume_step = max(MIN_VOLUME_STEP, min(MAX_VOLUME_STEP, volume_step))
 
         if not host:
             raise ValueError("IP address is required")
 
-        heos = Heos(HeosOptions(
-            host=host,
-            auto_reconnect=False,
-            events=False,
-            heart_beat=False,
-        ))
+        heos = Heos(
+            HeosOptions(
+                host=host,
+                auto_reconnect=False,
+                events=False,
+                heart_beat=False,
+            )
+        )
 
         try:
             await heos.connect()
