@@ -97,7 +97,7 @@ HEOS uses **account-based** setup. Make sure your devices are already configured
 
 - **HEOS Device IP** - any HEOS device on your network.
 - **HEOS Account Email** / **Password** - your HEOS account credentials.
-- **Volume Step** - the volume up/down step size (1-25, default 5).
+- **Volume Step** - the volume up/down step size (1-10, default 5).
 
 The integration connects, authenticates, and discovers **all** players on your account automatically.
 
