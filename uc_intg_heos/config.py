@@ -7,6 +7,8 @@ HEOS Integration configuration.
 
 from dataclasses import dataclass
 
+from uc_intg_heos.const import DEFAULT_VOLUME_STEP
+
 
 @dataclass
 class HeosDeviceConfig:
@@ -17,4 +19,4 @@ class HeosDeviceConfig:
     host: str = ""
     username: str = ""
     password: str = ""
-    volume_step: int = 5
+    volume_step: int = DEFAULT_VOLUME_STEP
