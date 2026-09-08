@@ -5,6 +5,7 @@ HEOS Integration constants.
 :license: MPL-2.0, see LICENSE for more details.
 """
 
+DEFAULT_VOLUME_STEP: int = 5
 POLL_INTERVAL = 30
 POLL_INTERVAL_STANDBY = 60
 UPDATE_THROTTLE = 2.0
