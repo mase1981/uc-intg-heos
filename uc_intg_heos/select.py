@@ -75,15 +75,30 @@ class HeosInputSelect(SelectEntity):
         if not player:
             return StatusCodes.SERVICE_UNAVAILABLE
 
-        try:
-            if cmd_id == select.Commands.SELECT_OPTION:
-                option = (params or {}).get("option", "")
-                for inp in self._device.input_sources:
-                    if inp.name == option:
-                        await player.play_input_source(inp.media_id)
-                        return StatusCodes.OK
-                return StatusCodes.BAD_REQUEST
+        names = [inp.name for inp in self._device.input_sources]
+        if not names:
+            return StatusCodes.SERVICE_UNAVAILABLE
+        current = self.attributes.get(select.Attributes.CURRENT_OPTION, "")
+        index = names.index(current) if current in names else -1
+        if cmd_id == select.Commands.SELECT_OPTION:
+            option = (params or {}).get("option", "")
+        elif cmd_id == select.Commands.SELECT_FIRST:
+            option = names[0]
+        elif cmd_id == select.Commands.SELECT_LAST:
+            option = names[-1]
+        elif cmd_id == select.Commands.SELECT_NEXT:
+            option = names[(index + 1) % len(names)]
+        elif cmd_id == select.Commands.SELECT_PREVIOUS:
+            option = names[(index - 1) % len(names)]
+        else:
             return StatusCodes.NOT_IMPLEMENTED
+
+        try:
+            for inp in self._device.input_sources:
+                if inp.name == option:
+                    await player.play_input_source(inp.media_id)
+                    return StatusCodes.OK
+            return StatusCodes.BAD_REQUEST
         except HeosError as err:
             _LOG.error("[%s] Input select error: %s", entity.id, err)
             return StatusCodes.SERVER_ERROR

@@ -5,6 +5,7 @@ HEOS device implementing PollingDevice pattern.
 :license: MPL-2.0, see LICENSE for more details.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -38,6 +39,9 @@ class HeosDevice(PollingDevice):
         self._controller_unsub = None
         self._conn_unsubs: list = []
         self._last_update_time: float = 0.0
+        # The framework can call connect() twice in quick succession; without this the
+        # second establish_connection() tears down the first client while it connects.
+        self._connect_lock = asyncio.Lock()
 
     @property
     def identifier(self) -> str:
@@ -211,10 +215,15 @@ class HeosDevice(PollingDevice):
 
         self._players.clear()
 
+    async def connect(self) -> bool:
+        async with self._connect_lock:
+            return await super().connect()
+
     async def disconnect(self) -> None:
-        await self._teardown_client()
-        self._state = "UNAVAILABLE"
-        await super().disconnect()
+        async with self._connect_lock:
+            await self._teardown_client()
+            self._state = "UNAVAILABLE"
+            await super().disconnect()
 
     def _register_event_callbacks(self) -> None:
         self._register_player_callbacks()

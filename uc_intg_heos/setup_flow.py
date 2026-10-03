@@ -23,10 +23,15 @@ MIN_VOLUME_STEP: int = 1
 class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
     """HEOS account-based setup flow."""
 
-    def get_manual_entry_form(self) -> RequestUserInput:
+    def get_manual_entry_form(self, error: str = "") -> RequestUserInput:
+        fields: list[dict[str, Any]] = []
+        if error:
+            fields.append(
+                {"id": "error", "label": {"en": ""}, "field": {"label": {"value": {"en": f"⚠️ {error}"}}}}
+            )
         return RequestUserInput(
             {"en": "HEOS Account Setup"},
-            [
+            fields + [
                 {
                     "id": "host",
                     "label": {"en": "HEOS Device IP Address"},
@@ -78,7 +83,7 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
         volume_step = max(MIN_VOLUME_STEP, min(MAX_VOLUME_STEP, volume_step))
 
         if not host:
-            raise ValueError("IP address is required")
+            return self.get_manual_entry_form("Please enter the IP address of a HEOS device.")
 
         heos = Heos(
             HeosOptions(
@@ -106,9 +111,17 @@ class HeosSetupFlow(BaseSetupFlow[HeosDeviceConfig]):
 
         except HeosError as err:
             error_str = str(err).lower()
+            _LOG.error("HEOS setup failed for %s: %s", host, err)
             if "sign_in" in error_str or "auth" in error_str:
-                raise ValueError(f"Authentication failed: {err}") from err
-            raise ConnectionError(f"Cannot connect to HEOS at {host}: {err}") from err
+                return self.get_manual_entry_form(f"HEOS account sign-in failed: {err}")
+            return self.get_manual_entry_form(
+                f"Cannot connect to the HEOS device at {host}. Check the IP address and that it is on."
+            )
+        except (OSError, TimeoutError) as err:
+            _LOG.error("HEOS setup failed for %s: %s", host, err)
+            return self.get_manual_entry_form(
+                f"Cannot connect to the HEOS device at {host}. Check the IP address and that it is on."
+            )
         finally:
             try:
                 await heos.disconnect()

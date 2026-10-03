@@ -141,8 +141,30 @@ class HeosRemote(RemoteEntity):
     async def _handle_command(
         self, entity: remote.Remote, cmd_id: str, params: dict[str, Any] | None
     ) -> StatusCodes:
+        params = params or {}
+        if cmd_id in (remote.Commands.ON, remote.Commands.OFF):
+            # HEOS has no power command; accept so activity on/off steps succeed.
+            return StatusCodes.OK
+
+        delay = max(0, int(params.get("delay", 0) or 0)) / 1000  # milliseconds
+        if cmd_id == remote.Commands.SEND_CMD_SEQUENCE:
+            sequence = params.get("sequence", [])
+            commands = sequence.split(",") if isinstance(sequence, str) else list(sequence or [])
+        else:
+            repeat = max(1, int(params.get("repeat", 1) or 1))
+            commands = [params.get("command", cmd_id)] * repeat
+
+        status = StatusCodes.OK
+        for index, command in enumerate(commands):
+            status = await self._run_command(entity, str(command).strip())
+            if status != StatusCodes.OK:
+                return status
+            if delay and index < len(commands) - 1:
+                await asyncio.sleep(delay)
+        return status
+
+    async def _run_command(self, entity: remote.Remote, command: str) -> StatusCodes:
         async with self._cmd_lock:
-            command = (params or {}).get("command", cmd_id)
             player = self._device.get_player(self._player_id)
             if not player:
                 return StatusCodes.SERVICE_UNAVAILABLE
